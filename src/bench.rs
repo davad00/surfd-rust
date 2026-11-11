@@ -327,6 +327,7 @@ pub fn place_crowd(
         players: usize::from(crowd.count),
         capacity: 64,
         room_id: None,
+        map_remaining_ms: None,
     });
     let forward = *camera.forward();
     let right = *camera.right();

@@ -477,6 +477,9 @@ pub(super) enum Label {
     Splits,
     Diagnostics,
     Chat,
+    RoomMapClock,
+    RoomVoteClock,
+    RoomVote,
     Ranked,
     Ghost,
     Shortcut,
@@ -1052,7 +1055,7 @@ pub fn render(
         commands.entity(root).despawn();
     }
     if menu.page == Page::Playing {
-        spawn_hud(&mut commands, &game, &menu.settings);
+        spawn_hud(&mut commands, &game, &menu.settings, &online);
         return;
     }
     let mark = mark.get_or_insert_with(|| brand_image(&mut images)).clone();

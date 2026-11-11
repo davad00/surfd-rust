@@ -4,12 +4,18 @@ use bevy::{
     prelude::*,
 };
 
-use crate::online::{
-    Action, Field, Online, OnlinePage, RoomAvailability, RunSplits, SURFD_HISTORY_PAGE_SIZE,
+use crate::{
+    menu::Label,
+    online::{
+        Action, Field, Online, OnlinePage, RoomAvailability, RunSplits, SURFD_HISTORY_PAGE_SIZE,
+    },
 };
 use bevy_surf::{
     catalog,
-    network::{CONTINUE_MAP, EXTEND_MAP, ROOM_REPORT_PAGE_SIZE, RoomModeration, VoteKind},
+    network::{
+        CONTINUE_MAP, EXTEND_MAP, MAP_VOTE_CHOICES, ROOM_REPORT_PAGE_SIZE, RoomModeration,
+        VoteKind, map_time_label,
+    },
     record_protocol::{OAuthProvider, PLAYER_RUNS_PAGE_SIZE, PlayerRunSort, Playtime, Profile},
     social_protocol::{
         DirectMessage, MessageReportPage, MessageReportReason, NotificationKind, PlayerActivity,
@@ -76,10 +82,18 @@ fn servers(parent: &mut ChildSpawnerCommands, online: &Online) {
     for server in &online.servers {
         match &server.availability {
             RoomAvailability::Online { info, ping_ms } => {
-                let title = format!(
+                let mut title = format!(
                     "{}   ·   {}   ·   {}/{} players   ·   {} ms",
-                    info.name, info.map, info.players, info.capacity, ping_ms
+                    info.name,
+                    map_title(&info.map),
+                    info.players,
+                    info.capacity,
+                    ping_ms
                 );
+                if let Some(ms) = info.map_remaining_ms {
+                    title.push_str("   ·   ");
+                    title.push_str(&map_time_label(std::time::Duration::from_millis(ms)));
+                }
                 line(parent, |row| {
                     flexible(row, title, 16.);
                     button(
@@ -115,11 +129,14 @@ fn players(parent: &mut ChildSpawnerCommands, online: &Online) {
         &room.name,
         &format!(
             "{} · {}/{} players",
-            room.map,
+            map_title(&room.map),
             online.players.len(),
             room.capacity
         ),
     );
+    if online.room_map_time(std::time::Instant::now()).is_some() {
+        parent.spawn((label("", 14., MUTED), Label::RoomMapClock));
+    }
     horizontal(parent, |row| {
         button(row, "Return to surf", Action::Spectate(None), false);
         if !online.managed_guest() {
@@ -139,28 +156,12 @@ fn players(parent: &mut ChildSpawnerCommands, online: &Online) {
     if let Some(vote) = &online.vote {
         if vote.open {
             horizontal(parent, |row| {
-                row.spawn(label(
-                    format!(
-                        "{} · {}s",
-                        if vote.kind == VoteKind::Extend {
-                            "Extend map by 15 minutes?"
-                        } else {
-                            "Map vote"
-                        },
-                        vote.seconds_left
-                    ),
-                    15.,
-                    ACCENT,
-                ));
-                for map in vote.maps.iter().take(5) {
-                    let choice = match map.as_str() {
-                        EXTEND_MAP => "Yes",
-                        CONTINUE_MAP => "No",
-                        name => map_title(name),
-                    };
+                row.spawn((label("", 15., ACCENT), Label::RoomVoteClock));
+                for (index, map) in vote.maps.iter().take(MAP_VOTE_CHOICES).enumerate() {
                     let option = format!(
-                        "{} · {}",
-                        choice,
+                        "{}. {} · {}",
+                        index + 1,
+                        vote_choice_title(map),
                         vote.votes.get(map).copied().unwrap_or_default()
                     );
                     if online.managed_guest() {
@@ -224,11 +225,31 @@ fn players(parent: &mut ChildSpawnerCommands, online: &Online) {
             14.,
             MUTED,
         ));
+    }
+    horizontal(parent, |row| {
+        let hint = if online.managed_guest() {
+            "Command or /help"
+        } else {
+            "Message or /help"
+        };
+        field(row, online, Field::Chat, hint, 420.);
+        button(row, "Send", Action::Chat, true);
+    });
+}
+
+pub(crate) fn vote_choice_title(map: &str) -> &str {
+    match map {
+        EXTEND_MAP => "Yes",
+        CONTINUE_MAP => "No",
+        name => map_title(name),
+    }
+}
+
+pub(crate) fn vote_title(kind: VoteKind) -> &'static str {
+    if kind == VoteKind::Extend {
+        "Extend map by 15 minutes?"
     } else {
-        horizontal(parent, |row| {
-            field(row, online, Field::Chat, "Message", 420.);
-            button(row, "Send", Action::Chat, true);
-        });
+        "Map vote"
     }
 }
 

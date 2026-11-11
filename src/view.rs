@@ -1397,6 +1397,7 @@ mod tests {
             players: 2,
             capacity: 4,
             room_id: None,
+            map_remaining_ms: None,
         });
         online.spectating = Some(1);
         online.players.push(PlayerInfo {

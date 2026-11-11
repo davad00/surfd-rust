@@ -357,6 +357,8 @@ pub struct Online {
     last_sent_pose: Option<(u64, u32)>,
     pub room_reports: Option<RoomReportPage>,
     pub vote: Option<VoteInfo>,
+    room_map_deadline: Option<Instant>,
+    room_vote_deadline: Option<Instant>,
     pub spectating: Option<u64>,
     pub messages: VecDeque<String>,
     pub servers: Vec<ServerRow>,
@@ -460,6 +462,8 @@ impl Default for Online {
             last_sent_pose: None,
             room_reports: None,
             vote: None,
+            room_map_deadline: None,
+            room_vote_deadline: None,
             spectating: None,
             messages: VecDeque::new(),
             servers: Vec::new(),
@@ -667,6 +671,39 @@ impl Online {
         self.remote_poses.sample(now_ms);
     }
 
+    pub(crate) fn room_map_time(&self, now: Instant) -> Option<String> {
+        self.room_map_deadline
+            .map(|deadline| network::map_time_label(deadline.saturating_duration_since(now)))
+    }
+
+    pub(crate) fn active_vote(&self, now: Instant) -> Option<(&VoteInfo, u64)> {
+        let vote = self.vote.as_ref()?;
+        let remaining = self.room_vote_deadline?.checked_duration_since(now)?;
+        let seconds = remaining.as_nanos().div_ceil(1_000_000_000) as u64;
+        (seconds != 0).then_some((vote, seconds))
+    }
+
+    fn receive_vote(&mut self, vote: VoteInfo, now: Instant) {
+        if let Some(ms) = vote.map_remaining_ms {
+            self.room_map_deadline = now.checked_add(Duration::from_millis(ms));
+        }
+        self.room_vote_deadline = if vote.open {
+            now.checked_add(vote.vote_remaining_ms.map_or_else(
+                || Duration::from_secs(vote.seconds_left),
+                Duration::from_millis,
+            ))
+        } else {
+            None
+        };
+        self.vote = Some(vote);
+    }
+
+    fn reset_room_clocks(&mut self) {
+        self.vote = None;
+        self.room_map_deadline = None;
+        self.room_vote_deadline = None;
+    }
+
     pub fn show_players(&self, game: &Game) -> bool {
         self.room
             .as_ref()
@@ -752,7 +789,7 @@ impl Online {
         if self.field == Some(Field::Chat) {
             self.field = None;
         }
-        self.vote = None;
+        self.reset_room_clocks();
         self.spectating = None;
         self.desired_map = None;
     }
@@ -1826,7 +1863,6 @@ pub fn keyboard(
     online.consumed_input = false;
     if online.field.is_none()
         && online.is_connected()
-        && !online.managed_guest()
         && menu.page == Page::Playing
         && (keys.just_pressed(KeyCode::KeyY) || keys.just_pressed(KeyCode::KeyT))
     {
@@ -1836,6 +1872,14 @@ pub fn keyboard(
         return;
     }
     let Some(field) = online.field else {
+        if menu.page == Page::Playing
+            && !online.managed_guest()
+            && let Some(index) = vote_key(&keys)
+            && let Some((vote, _)) = online.active_vote(Instant::now())
+            && let Some(map) = vote.maps.get(index).cloned()
+        {
+            online.actions.push(Action::Vote(map));
+        }
         input.clear();
         return;
     };
@@ -1886,6 +1930,34 @@ pub fn keyboard(
         }
         menu.refresh();
     }
+}
+
+fn vote_key(keys: &ButtonInput<KeyCode>) -> Option<usize> {
+    if keys.any_pressed([
+        KeyCode::AltLeft,
+        KeyCode::AltRight,
+        KeyCode::ControlLeft,
+        KeyCode::ControlRight,
+        KeyCode::ShiftLeft,
+        KeyCode::ShiftRight,
+        KeyCode::SuperLeft,
+        KeyCode::SuperRight,
+    ]) {
+        return None;
+    }
+    [
+        (KeyCode::Digit1, KeyCode::Numpad1),
+        (KeyCode::Digit2, KeyCode::Numpad2),
+        (KeyCode::Digit3, KeyCode::Numpad3),
+        (KeyCode::Digit4, KeyCode::Numpad4),
+        (KeyCode::Digit5, KeyCode::Numpad5),
+        (KeyCode::Digit6, KeyCode::Numpad6),
+        (KeyCode::Digit7, KeyCode::Numpad7),
+        (KeyCode::Digit8, KeyCode::Numpad8),
+        (KeyCode::Digit9, KeyCode::Numpad9),
+    ]
+    .into_iter()
+    .position(|(digit, keypad)| keys.just_pressed(digit) || keys.just_pressed(keypad))
 }
 
 fn watch_lesson_demo(
@@ -2113,8 +2185,13 @@ pub fn update(
                 online.id = Some(id);
                 online.status = format!("Connected to {}", room.name);
                 online.desired_map = Some(room.map.clone());
+                let now = Instant::now();
+                online.reset_room_clocks();
+                online.room_map_deadline = room
+                    .map_remaining_ms
+                    .and_then(|ms| now.checked_add(Duration::from_millis(ms)));
                 online.room = Some(room);
-                online.room_refresh.renewed(Instant::now());
+                online.room_refresh.renewed(now);
                 true
             }
             ServerEvent::Players(players) => {
@@ -2129,12 +2206,13 @@ pub fn update(
                     room.map.clone_from(&map);
                 }
                 online.desired_map = Some(map);
+                online.reset_room_clocks();
                 online.players.clear();
                 online.remote_poses.clear();
                 true
             }
             ServerEvent::Vote(vote) => {
-                online.vote = Some(vote);
+                online.receive_vote(vote, Instant::now());
                 true
             }
             ServerEvent::Reports(page) => {
@@ -2154,6 +2232,9 @@ pub fn update(
                 true
             }
             ServerEvent::Error(error) => {
+                if online.is_connected() {
+                    online.notify(error.clone());
+                }
                 online.status = error;
                 true
             }
@@ -4138,6 +4219,7 @@ mod tests {
             players: 1,
             capacity: 24,
             room_id: None,
+            map_remaining_ms: None,
         });
         let library = MapLibrary::read();
         let mut menu = MenuState::new(&library.directory);

@@ -31,6 +31,7 @@ pub use transport::{
 pub const DEFAULT_ADDRESS: &str = "127.0.0.1:27165";
 pub const EXTEND_MAP: &str = "@extend";
 pub const CONTINUE_MAP: &str = "@continue";
+pub const MAP_VOTE_CHOICES: usize = 5;
 const DEFAULT_PORT: u16 = 27165;
 pub(crate) const PROTOCOL_VERSION: u16 = 1;
 pub(crate) const MAX_FRAME_BYTES: usize = 48 * 1024;
@@ -52,6 +53,19 @@ pub struct RoomInfo {
     pub capacity: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map_remaining_ms: Option<u64>,
+}
+
+pub fn map_time_label(remaining: Duration) -> String {
+    let seconds = remaining.as_nanos().div_ceil(1_000_000_000);
+    if seconds == 0 {
+        "Changing map…".into()
+    } else if remaining < Duration::from_secs(60) {
+        format!("{seconds}s left")
+    } else {
+        format!("{} min left", seconds.div_ceil(60))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -144,6 +158,10 @@ pub struct VoteInfo {
     pub needed: usize,
     pub open: bool,
     pub seconds_left: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map_remaining_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vote_remaining_ms: Option<u64>,
     pub rtv: usize,
     #[serde(default)]
     pub kind: VoteKind,
@@ -995,6 +1013,22 @@ mod tests {
     use std::{io::Write, net::TcpListener};
 
     #[test]
+    fn room_clocks_keep_legacy_wire_payloads_readable() {
+        let room: RoomInfo =
+            serde_json::from_str(r#"{"name":"LAN","map":"downline","players":1,"capacity":8}"#)
+                .unwrap();
+        let vote: VoteInfo = serde_json::from_str(
+            r#"{"maps":[],"nominations":[],"votes":{},"needed":1,"open":false,"seconds_left":0,"rtv":0}"#,
+        ).unwrap();
+        assert_eq!(room.map_remaining_ms, None);
+        assert_eq!(vote.map_remaining_ms, None);
+        assert_eq!(vote.vote_remaining_ms, None);
+        assert_eq!(map_time_label(Duration::from_millis(59_001)), "60s left");
+        assert_eq!(map_time_label(Duration::from_millis(60_001)), "2 min left");
+        assert_eq!(map_time_label(Duration::ZERO), "Changing map…");
+    }
+
+    #[test]
     fn room_capabilities_opt_in_without_changing_legacy_joins() {
         #[derive(Deserialize)]
         #[serde(tag = "type", content = "data", rename_all = "snake_case")]
@@ -1093,6 +1127,7 @@ mod tests {
                                 players: 1,
                                 capacity: 1,
                                 room_id: None,
+                                map_remaining_ms: None,
                             },
                         },
                     })

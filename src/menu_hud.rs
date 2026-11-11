@@ -1,16 +1,23 @@
 use super::*;
 use crate::view::LiveLessonCue;
+use std::{fmt::Write, time::Instant};
 
 const KITSUNE_STAGES: [&str; 9] = [
     "Red", "Orange", "Yellow", "Green", "Teal", "Blue", "Purple", "Pink", "White",
 ];
 
-pub(super) fn spawn_hud(commands: &mut Commands, game: &Game, settings: &Settings) {
+pub(super) fn spawn_hud(
+    commands: &mut Commands,
+    game: &Game,
+    settings: &Settings,
+    online: &Online,
+) {
     let scale = settings.hud_scale;
     let lesson = game.tutorial_lesson();
     let demo = game.watching_lesson_demo();
     let drill = game.drill_section();
     let starter = game.starter_guide() && !game.watching_replay();
+    let now = Instant::now();
     let live = (game.has_live_lesson_coach() && !demo).then(|| {
         let [release, steer, switch, stay_high] = [
             "Release {forward} now. Let the drop carry you onto the ramp.",
@@ -39,6 +46,12 @@ pub(super) fn spawn_hud(commands: &mut Commands, game: &Game, settings: &Setting
                         14. * scale,
                         INK,
                     ));
+                    if online.room_map_time(now).is_some() {
+                        corner.spawn((text("", 12. * scale, MINT), Label::RoomMapClock));
+                    }
+                    if online.is_connected() {
+                        corner.spawn(text("Y chat · /help", 11. * scale, MUTED));
+                    }
                     if lesson.is_none() {
                         corner.spawn(text("66 tick  /  Source-style surf", 11. * scale, MUTED));
                     }
@@ -49,6 +62,9 @@ pub(super) fn spawn_hud(commands: &mut Commands, game: &Game, settings: &Setting
                             11. * scale,
                             MUTED,
                         ));
+                    }
+                    if online.active_vote(now).is_some() {
+                        corner.spawn((text("", 15. * scale, INK), Label::RoomVote));
                     }
                 });
             hud.spawn(Node {
@@ -529,10 +545,11 @@ pub fn update_hud(
                 && board.bonus == game.selected_bonus()
         })
         .and_then(|board| board.rows.first());
+    let now = Instant::now();
     for (label, mut text, mut color) in &mut labels {
         let value = match label {
             Label::Notice => {
-                if menu.page == Page::Playing && std::time::Instant::now() >= menu.notice_until {
+                if menu.page == Page::Playing && now >= menu.notice_until {
                     String::new()
                 } else {
                     menu.notice.clone()
@@ -701,9 +718,53 @@ pub fn update_hud(
                     .cloned()
                     .collect::<Vec<_>>();
                 if online.field == Some(Field::Chat) {
-                    lines.push(format!("Say  {}▏", online.field_value(Field::Chat)));
+                    let input = online.field_value(Field::Chat);
+                    let hint = if input.is_empty() {
+                        if online.managed_guest() {
+                            "Command or /help"
+                        } else {
+                            "Message or /help"
+                        }
+                    } else {
+                        input
+                    };
+                    lines.push(format!("{hint}▏"));
                 }
                 lines.join("\n")
+            }
+            Label::RoomMapClock => online.room_map_time(now).unwrap_or_default(),
+            Label::RoomVoteClock => online
+                .active_vote(now)
+                .map_or_else(String::new, |(vote, seconds)| {
+                    format!("{} · {seconds}s", online_ui::vote_title(vote.kind))
+                }),
+            Label::RoomVote => {
+                online
+                    .active_vote(now)
+                    .map_or_else(String::new, |(vote, seconds)| {
+                        let mut label =
+                            format!("{} · {seconds}s", online_ui::vote_title(vote.kind));
+                        for (index, map) in vote
+                            .maps
+                            .iter()
+                            .take(bevy_surf::network::MAP_VOTE_CHOICES)
+                            .enumerate()
+                        {
+                            let count = vote.votes.get(map).copied().unwrap_or_default();
+                            let _ = write!(
+                                label,
+                                "\n{}. {} · {count}",
+                                index + 1,
+                                online_ui::vote_choice_title(map)
+                            );
+                        }
+                        label.push_str(if online.managed_guest() {
+                            "\nSign in to vote"
+                        } else {
+                            "\nPress a number to vote"
+                        });
+                        label
+                    })
             }
             Label::Ranked => online.record_status.clone(),
             Label::LessonHeading => {
