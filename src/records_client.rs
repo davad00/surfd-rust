@@ -2,9 +2,9 @@ use bevy_surf::replay::RunReplay;
 use bevy_surf::{
     network::RoomJoinTicket,
     record_protocol::{
-        Attempt, AttemptRequest, MAX_REPLAY_BYTES, ManagedRoomEntry, RankedSaveLookup,
-        ReserveRankedSave, ServiceError, Submission, SubmissionLookup, SubmissionStatus, SubmitRun,
-        replay_sha256,
+        Attempt, AttemptRequest, DEFAULT_ENDPOINT, MAX_REPLAY_BYTES, ManagedRoomEntry,
+        RankedSaveLookup, ReserveRankedSave, ServiceError, Submission, SubmissionLookup,
+        SubmissionStatus, SubmitRun, replay_sha256,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -12,6 +12,15 @@ use std::{
     io::{self, Read},
     time::Duration,
 };
+
+pub fn configured_endpoint() -> String {
+    let default = if cfg!(test) {
+        DEFAULT_ENDPOINT
+    } else {
+        "https://13.63.105.24"
+    };
+    std::env::var("SURF_RECORDS_URL").unwrap_or_else(|_| default.into())
+}
 
 pub struct RetryableRequestFailure {
     pub message: String,

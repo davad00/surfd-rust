@@ -12,7 +12,7 @@ Download `Surfd-Rust-Windows-x64.exe` from [Releases](https://github.com/davad00
 cargo run --release --locked
 ```
 
-**Play now** checks configured rooms and tries up to four rooms with space, starting with the lowest latency. If those rooms fill or become unreachable, it opens solo play. **Servers** refreshes while open and keeps configured rooms visible during a restart. **Maps** (F2) searches the catalog and local BSPs. Catalog maps download collision data and original visual packs on first play and cache them for offline use. **Practice** opens available authored starts, timed bonus routes, and position saves. **Records** shows local results and verified boards when the records service is running.
+**Play now** checks the public room directory and tries up to four rooms with space, starting with the lowest latency. If those rooms fill or become unreachable, it opens solo play. **Servers** refreshes while open and keeps configured rooms visible during a restart. **Maps** (F2) searches the catalog and local BSPs. Catalog maps download collision data and original visual packs on first play and cache them for offline use. **Practice** opens available authored starts, timed bonus routes, and position saves. **Records** shows local results and verified boards when the records service is running.
 
 Open a player profile and select **Runs** to browse their verified personal bests by place or date. **Watch** and **Race** load a compatible replay and its map.
 
@@ -48,7 +48,7 @@ Start the accounts and records service in another terminal.
 cargo run --release --locked --no-default-features --features records-service --bin surf-records
 ```
 
-In the client, refresh **Find a server** or connect to `127.0.0.1:27165`. Open **Profile & loadout** to create an account on the records service at `http://127.0.0.1:27166`. Guests can surf without signing in. An eligible guest finish can be saved from **Records** after sign-in. The service replays input commands against a trusted map revision before it stores a time. Accounts, sessions, boards, and social data persist in the service's SQLite database.
+For a local client, set `SURF_RECORDS_URL` to `http://127.0.0.1:27166` before launch. Refresh **Find a server** or connect to `127.0.0.1:27165`. Open **Profile & loadout** to create an account on your chosen records service. Guests can surf without signing in. An eligible guest finish can be saved from **Records** after sign-in. The service replays input commands against a trusted map revision before it stores a time. Accounts, sessions, boards, and social data persist in the service's SQLite database.
 
 Use `SURF_SERVERS` for a semicolon-separated list of room addresses. Both the client and the records service read it, and clients can discover the service's list. Set `SURF_RECORDS_URL` to use another records service, or set `SURF_CONNECT` to a room address to join when the client starts. Multiple room processes can listen on distinct ports. The room console accepts `help` for map changes, player listing, mutes, kicks, bans, and shutdown. Rooms relay client movement. Ranked verification is a separate service. Local LAN rooms can use plain TCP. Remote records clients require HTTPS in front of the loopback records service.
 

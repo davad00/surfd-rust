@@ -6,7 +6,7 @@ use std::{
 use bevy_surf::{
     catalog,
     network::{self, Client, ClientMessage, RoomInfo, ServerEvent},
-    record_protocol::{DEFAULT_ENDPOINT, ManagedRoomEntry},
+    record_protocol::ManagedRoomEntry,
 };
 use serde::{Deserialize, Serialize};
 
@@ -42,7 +42,7 @@ pub(super) fn join_managed_room(
 }
 
 pub(super) fn run(room_id: &str) -> Result<(), String> {
-    let endpoint = records_endpoint();
+    let endpoint = api::configured_endpoint();
     let records: RecordsReadiness = api::get_fast(&endpoint, "/v1/ready")
         .map_err(|error| format!("Records readiness check failed: {error}"))?;
     if !records.ready {
@@ -70,7 +70,7 @@ pub(super) fn run(room_id: &str) -> Result<(), String> {
 }
 
 pub(super) fn status(room_id: &str) -> Result<(), String> {
-    let (entry, room, latency) = discover_registered_room(&records_endpoint(), room_id)?;
+    let (entry, room, latency) = discover_registered_room(&api::configured_endpoint(), room_id)?;
     print_json(&RoomStatus {
         reachable: true,
         full: room.players >= room.capacity,
@@ -80,10 +80,6 @@ pub(super) fn status(room_id: &str) -> Result<(), String> {
             room,
         },
     })
-}
-
-fn records_endpoint() -> String {
-    std::env::var("SURF_RECORDS_URL").unwrap_or_else(|_| DEFAULT_ENDPOINT.into())
 }
 
 fn discover_registered_room(

@@ -20,10 +20,10 @@ use bevy_surf::{
         RoomJoinTicket, RoomModeration, RoomReportPage, ServerEvent, VoteInfo,
     },
     record_protocol::{
-        Attempt, AttemptRequest, Board, Credentials, DEFAULT_ENDPOINT, ManagedRoomEntry, OAuthPoll,
-        OAuthProvider, OAuthStart, OAuthStartRequest, PLAYER_RUNS_PAGE_SIZE, PlayerRunSort,
-        PlayerRunsPage, Playtime, PlaytimePrivacy, Profile, ProfileExtrasUpdate, Progression,
-        SignedIn, StageBests, StageSpan,
+        Attempt, AttemptRequest, Board, Credentials, ManagedRoomEntry, OAuthPoll, OAuthProvider,
+        OAuthStart, OAuthStartRequest, PLAYER_RUNS_PAGE_SIZE, PlayerRunSort, PlayerRunsPage,
+        Playtime, PlaytimePrivacy, Profile, ProfileExtrasUpdate, Progression, SignedIn, StageBests,
+        StageSpan,
     },
     reference_ghost::ReferenceGhost,
     replay::RunReplay,
@@ -436,8 +436,7 @@ pub struct Online {
 impl Default for Online {
     fn default() -> Self {
         let (sender, receiver) = mpsc::channel();
-        let endpoint =
-            std::env::var("SURF_RECORDS_URL").unwrap_or_else(|_| DEFAULT_ENDPOINT.into());
+        let endpoint = api::configured_endpoint();
         let records_origin = endpoint.trim().trim_end_matches('/').to_owned();
         let configured_servers: Vec<_> = std::env::var("SURF_SERVERS")
             .unwrap_or_default()
