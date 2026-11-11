@@ -58,6 +58,8 @@ For a public managed room, configure a PEM certificate chain and private key wit
 
 Rooms reclaim a slot after 20 seconds without a receipt from a client that supports heartbeat receipts. This also catches a client that keeps sending movement after it stops receiving room traffic. Rooms close connections with pending writes after ten seconds without forward progress. Older clients use plain heartbeats.
 
+The [room server performance report](docs/room-performance.md) covers load-test results, including the six-minute 512-player run and the sustained resource budgets.
+
 See the [Linux hosting guide](deploy/README.md) for systemd services, HTTPS proxy configuration, and a desktop connection check.
 
 Set `SURF_RECORDS_URL` to the records service origin and run `bevy-surf --check-room ROOM_ID` from a player network. The command checks records readiness, looks up the room, briefly joins it as a guest using its configured address and certificate, then waits for the disconnect. It prints the room details as JSON on success and exits with an error if a step fails.
