@@ -1,6 +1,6 @@
 [package]
 name = "bevy-surf"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 default-run = "bevy-surf"
 
@@ -42,6 +42,9 @@ getrandom = "0.4"
 rusqlite = { version = "0.37", features = ["bundled"], optional = true }
 tiny_http = { version = "0.12", optional = true }
 ctrlc = { version = "3.5.2", features = ["termination"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.31.3", default-features = false, features = ["poll"] }
 
 [target.'cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))'.dependencies]
 bevy = { version = "0.20.1", optional = true, default-features = false, features = ["statically-linked-dxc"] }

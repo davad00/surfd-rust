@@ -477,7 +477,7 @@ dependencies = [
 
 [[package]]
 name = "bevy-surf"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -489,6 +489,7 @@ dependencies = [
  "hmac",
  "image",
  "lzma-rs",
+ "nix",
  "rcgen",
  "rusqlite",
  "rustls",

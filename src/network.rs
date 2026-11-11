@@ -14,13 +14,14 @@ use std::{
 
 use crate::movement::{CROUCH_EYE_HEIGHT, EYE_HEIGHT};
 
+mod compact_snapshot;
 mod room_tickets;
 mod snapshots;
 mod transport;
 pub use room_tickets::{RoomIdentity, RoomJoinTicket, RoomTicketKey};
 pub(crate) use room_tickets::{TicketClaims, room_server_proof, ticket_time, verify_room_proof};
 pub(crate) use snapshots::SnapshotEncoder;
-use snapshots::{COMPRESSED_FRAME, SnapshotDecoder};
+use snapshots::{COMPACT_FRAME, COMPRESSED_FRAME, SnapshotDecoder};
 pub(crate) use transport::lan_address;
 use transport::{RoomAddress, RoomClientTls, Transport};
 pub use transport::{
@@ -223,11 +224,14 @@ pub(crate) struct RoomCapabilities {
     #[serde(default, skip_serializing_if = "is_false")]
     pub compressed_snapshots: bool,
     #[serde(default, skip_serializing_if = "is_false")]
+    pub compact_snapshots: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub heartbeat_receipts: bool,
 }
 
 const CLIENT_CAPABILITIES: RoomCapabilities = RoomCapabilities {
     compressed_snapshots: true,
+    compact_snapshots: true,
     heartbeat_receipts: true,
 };
 
@@ -279,6 +283,24 @@ pub(crate) enum Response {
     },
     Heartbeat,
     HeartbeatChallenge([u8; 8]),
+}
+
+pub(crate) trait RoomWireMessage: DeserializeOwned {
+    fn decode_compact_snapshot(_: &[u8]) -> io::Result<Self> {
+        Err(invalid_data("unexpected compact roster"))
+    }
+}
+
+impl RoomWireMessage for Request {}
+
+impl RoomWireMessage for Response {
+    fn decode_compact_snapshot(payload: &[u8]) -> io::Result<Self> {
+        let (epoch, players) = compact_snapshot::decode(payload)?;
+        Ok(Self::Event {
+            epoch,
+            event: ServerEvent::Players(players),
+        })
+    }
 }
 
 /// A room connection with background I/O. State updates replace the previous
@@ -630,7 +652,7 @@ fn client_worker(
     shared: &ClientState,
 ) -> io::Result<()> {
     let mut socket = connect_socket(address)?;
-    socket.accept_compressed_snapshots();
+    socket.accept_compact_snapshots();
     let join = if let Some(ticket) = &ticket {
         Request::TicketJoin {
             version: PROTOCOL_VERSION,
@@ -783,6 +805,8 @@ fn invalid_data(reason: &'static str) -> io::Error {
 pub(crate) struct ReadBatch<T> {
     pub messages: Vec<T>,
     pub eof: bool,
+    #[cfg(target_os = "linux")]
+    pub drained: bool,
 }
 
 struct QueuedFrame {
@@ -795,6 +819,7 @@ pub(crate) struct FramedSocket {
     stream: Transport,
     input: Vec<u8>,
     snapshot_decoder: Option<SnapshotDecoder>,
+    accept_compact_snapshots: bool,
     output: VecDeque<QueuedFrame>,
     active: Option<QueuedFrame>,
     latest_snapshot: Option<QueuedFrame>,
@@ -803,6 +828,16 @@ pub(crate) struct FramedSocket {
 }
 
 impl FramedSocket {
+    #[cfg(target_os = "linux")]
+    pub fn poll_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.stream.poll_fd()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn transport_read_pending(&self) -> bool {
+        self.stream.read_pending()
+    }
+
     pub fn new(stream: TcpStream) -> io::Result<Self> {
         Ok(Self::from_transport(Transport::plain(stream)?))
     }
@@ -818,6 +853,7 @@ impl FramedSocket {
             stream,
             input: Vec::new(),
             snapshot_decoder: None,
+            accept_compact_snapshots: false,
             output: VecDeque::new(),
             active: None,
             latest_snapshot: None,
@@ -828,6 +864,11 @@ impl FramedSocket {
 
     fn accept_compressed_snapshots(&mut self) {
         self.snapshot_decoder = Some(SnapshotDecoder::default());
+    }
+
+    fn accept_compact_snapshots(&mut self) {
+        self.accept_compressed_snapshots();
+        self.accept_compact_snapshots = true;
     }
 
     pub fn queue(&mut self, bytes: Arc<[u8]>) -> io::Result<()> {
@@ -951,9 +992,11 @@ impl FramedSocket {
         }
     }
 
-    pub fn receive<T: DeserializeOwned>(&mut self) -> io::Result<ReadBatch<T>> {
+    pub fn receive<T: RoomWireMessage>(&mut self) -> io::Result<ReadBatch<T>> {
         let mut messages = Vec::new();
         let mut eof = false;
+        #[cfg(target_os = "linux")]
+        let mut drained = false;
         let mut scratch = [0; 4096];
         for read_count in 0..=8 {
             let mut consumed = 0;
@@ -961,12 +1004,16 @@ impl FramedSocket {
                 let header =
                     u32::from_be_bytes(self.input[consumed..consumed + 4].try_into().unwrap());
                 let compressed = header & COMPRESSED_FRAME != 0;
-                let size = (header & !COMPRESSED_FRAME) as usize;
+                let compact = header & COMPACT_FRAME != 0;
+                let size = (header & !(COMPRESSED_FRAME | COMPACT_FRAME)) as usize;
                 if !(1..=MAX_FRAME_BYTES).contains(&size) {
                     return Err(invalid_data("invalid room message length"));
                 }
                 if compressed && self.snapshot_decoder.is_none() {
                     return Err(invalid_data("unexpected compressed room message"));
+                }
+                if compact && !self.accept_compact_snapshots {
+                    return Err(invalid_data("unexpected compact roster"));
                 }
                 let end = consumed + 4 + size;
                 if self.input.len() < end {
@@ -976,7 +1023,11 @@ impl FramedSocket {
                 if compressed {
                     payload = self.snapshot_decoder.as_mut().unwrap().decode(payload)?;
                 }
-                messages.push(decode(payload)?);
+                messages.push(if compact {
+                    T::decode_compact_snapshot(payload)?
+                } else {
+                    decode(payload)?
+                });
                 consumed = end;
             }
             self.input.drain(..consumed);
@@ -992,7 +1043,13 @@ impl FramedSocket {
                     break;
                 }
                 Ok(read) => self.input.extend_from_slice(&scratch[..read]),
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    #[cfg(target_os = "linux")]
+                    {
+                        drained = true;
+                    }
+                    break;
+                }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error)
                     if error.kind() == io::ErrorKind::UnexpectedEof && self.input.is_empty() =>
@@ -1003,7 +1060,12 @@ impl FramedSocket {
                 Err(error) => return Err(error),
             }
         }
-        Ok(ReadBatch { messages, eof })
+        Ok(ReadBatch {
+            messages,
+            eof,
+            #[cfg(target_os = "linux")]
+            drained,
+        })
     }
 }
 
@@ -1062,6 +1124,7 @@ mod tests {
             Request::Join {
                 capabilities: RoomCapabilities {
                     compressed_snapshots: false,
+                    compact_snapshots: false,
                     heartbeat_receipts: false
                 },
                 ..
@@ -1072,6 +1135,7 @@ mod tests {
             Request::TicketJoin {
                 capabilities: RoomCapabilities {
                     compressed_snapshots: false,
+                    compact_snapshots: false,
                     heartbeat_receipts: false
                 },
                 ..
@@ -1080,7 +1144,7 @@ mod tests {
         assert!(matches!(
             decode(br#"{"type":"join","data":{"version":1,"name":"Player","compressed_snapshots":true}}"#).unwrap(),
             Request::Join {
-                capabilities: RoomCapabilities { compressed_snapshots: true, heartbeat_receipts: false },
+                capabilities: RoomCapabilities { compressed_snapshots: true, compact_snapshots: false, heartbeat_receipts: false },
                 ..
             }
         ));
@@ -1319,7 +1383,7 @@ mod tests {
         assert!(discover(&server.local_addr().to_string()).is_err());
 
         let mut secure = transport("localhost", trusted);
-        secure.accept_compressed_snapshots();
+        secure.accept_compact_snapshots();
         let ticket = ticket_key.issue(None, ticket_time()).unwrap();
         secure
             .queue(

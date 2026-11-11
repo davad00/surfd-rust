@@ -238,6 +238,19 @@ impl Transport {
         self.tls.as_ref().is_none_or(|tls| !tls.wants_write())
     }
 
+    #[cfg(target_os = "linux")]
+    pub(super) fn poll_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd;
+        self.stream.as_fd()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn read_pending(&self) -> bool {
+        // Established rustls sessions want to read unless there is buffered
+        // plaintext or a received close notification to report to the reader.
+        self.tls.as_ref().is_some_and(|tls| !tls.wants_read())
+    }
+
     pub(super) fn handshake_ready(&mut self) -> io::Result<bool> {
         match self.flush() {
             Ok(()) => {}

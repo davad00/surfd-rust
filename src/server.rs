@@ -25,6 +25,19 @@ mod moderation;
 use moderation::{Moderation, REPORT_RETENTION, Sanctions};
 
 const SERVER_STEP: Duration = Duration::from_millis(5);
+// Keep admission responsive and batch settled Linux sockets between snapshots.
+const ROOM_ADMISSION_STEP: Duration = if cfg!(target_os = "linux") {
+    Duration::from_millis(10)
+} else {
+    SERVER_STEP
+};
+const ROOM_ACTIVE_STEP: Duration = if cfg!(target_os = "linux") {
+    Duration::from_millis(20)
+} else {
+    SERVER_STEP
+};
+#[cfg(target_os = "linux")]
+const EMPTY_ROOM_POLL_MS: u16 = 100;
 const SNAPSHOT_INTERVAL: Duration = Duration::from_millis(50);
 const JOIN_TIMEOUT: Duration = Duration::from_secs(4);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -249,6 +262,8 @@ impl Drop for RoomServer {
 
 struct Peer {
     socket: FramedSocket,
+    #[cfg(target_os = "linux")]
+    read_needed: bool,
     address: SocketAddr,
     player: Option<PlayerInfo>,
     pending_join: Option<PendingJoin>,
@@ -303,6 +318,8 @@ impl Peer {
     fn new(socket: FramedSocket, address: SocketAddr, now: Instant) -> Self {
         Self {
             socket,
+            #[cfg(target_os = "linux")]
+            read_needed: true,
             address,
             player: None,
             pending_join: None,
@@ -370,11 +387,17 @@ impl Peer {
     }
 
     fn flush(&mut self, now: Instant) {
-        if self.socket.flush().is_err() {
-            self.dead = true;
-            return;
-        }
-        let drained = self.socket.drained();
+        let drained = if self.player.is_some() && self.socket.drained() {
+            // An admitted peer has completed its handshake. With no pending
+            // application or TLS bytes, flushing it cannot advance the socket.
+            true
+        } else {
+            if self.socket.flush().is_err() {
+                self.dead = true;
+                return;
+            }
+            self.socket.drained()
+        };
         if self.closing_at.is_some() && drained {
             self.dead = self.socket.shutdown().unwrap_or(true);
         } else if self.active_player().is_some()
@@ -457,6 +480,30 @@ struct Room {
     ballots: Ballots,
 }
 
+// The borrowed form of Response::Event { event: ServerEvent::Players(..) }.
+#[derive(serde::Serialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+enum SnapshotResponse<'a> {
+    Event {
+        epoch: u64,
+        event: SnapshotEvent<'a>,
+    },
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+enum SnapshotEvent<'a> {
+    Players(SnapshotRoster<'a>),
+}
+
+struct SnapshotRoster<'a>(&'a BTreeMap<u64, Peer>);
+
+impl serde::Serialize for SnapshotRoster<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.values().filter_map(Peer::active_player))
+    }
+}
+
 impl Room {
     fn new(config: RoomConfig, moderation: Moderation) -> Self {
         let now = Instant::now();
@@ -484,6 +531,7 @@ impl Room {
         stop: &AtomicBool,
     ) -> io::Result<()> {
         let mut next_moderation_cleanup = Instant::now() + Duration::from_secs(60);
+        let mut receive_scan = Vec::with_capacity(self.config.capacity + MAX_PENDING_CONNECTIONS);
         'running: while !stop.load(Ordering::Acquire) {
             let now = Instant::now();
             if now >= next_moderation_cleanup {
@@ -499,11 +547,12 @@ impl Room {
             if stop.load(Ordering::Acquire) {
                 break;
             }
-            for id in self.peers.keys().copied().collect::<Vec<_>>() {
+            let has_pending = self.collect_receive_scan(&listener, &mut receive_scan);
+            for &(id, should_read) in &receive_scan {
                 if stop.load(Ordering::Acquire) {
                     break 'running;
                 }
-                self.receive_from(id, now);
+                self.receive_from(id, now, should_read);
             }
             for command in commands.try_iter().take(64) {
                 if stop.load(Ordering::Acquire) {
@@ -516,6 +565,18 @@ impl Room {
             }
             self.remove_departed(now);
             self.advance_vote(now);
+            #[cfg(target_os = "linux")]
+            if self.peers.is_empty() {
+                // No recipients or pending handshakes. Wake for a connection
+                // immediately and periodically check admin/stop again.
+                if !matches!(
+                    poll_empty_room(&listener),
+                    Ok(_) | Err(nix::errno::Errno::EINTR)
+                ) {
+                    thread::sleep(SERVER_STEP);
+                }
+                continue;
+            }
             let snapshot_due = Instant::now() >= self.next_snapshot;
             if snapshot_due {
                 self.publish_snapshot();
@@ -528,7 +589,7 @@ impl Room {
             if snapshot_due {
                 self.next_snapshot = next_snapshot_deadline(self.next_snapshot, work_finished);
             }
-            let wake_at = (now + SERVER_STEP).min(self.next_snapshot);
+            let wake_at = next_room_wake(now, self.next_snapshot, has_pending);
             if wake_at > work_finished {
                 thread::sleep(wake_at - work_finished);
             }
@@ -623,7 +684,48 @@ impl Room {
         pending < MAX_PENDING_CONNECTIONS && same_source < MAX_PENDING_PER_SOURCE
     }
 
-    fn receive_from(&mut self, id: u64, now: Instant) {
+    #[cfg(not(target_os = "linux"))]
+    fn collect_receive_scan(&self, _: &TcpListener, scan: &mut Vec<(u64, bool)>) -> bool {
+        scan.clear();
+        scan.extend(self.peers.keys().map(|&id| (id, true)));
+        false
+    }
+
+    #[cfg(target_os = "linux")]
+    fn collect_receive_scan(&self, listener: &TcpListener, scan: &mut Vec<(u64, bool)>) -> bool {
+        use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+        use std::os::fd::AsFd;
+
+        const MAX_SOCKETS: usize = MAX_ROOM_PLAYERS + MAX_PENDING_CONNECTIONS;
+        let mut fds: [PollFd<'_>; MAX_SOCKETS] =
+            std::array::from_fn(|_| PollFd::new(listener.as_fd(), PollFlags::empty()));
+        let mut scan_indices = [0; MAX_SOCKETS];
+        let mut count = 0;
+        let mut has_pending = false;
+        scan.clear();
+        for (&id, peer) in &self.peers {
+            has_pending |= peer.player.is_none() && !peer.dead && peer.closing_at.is_none();
+            let should_read =
+                peer.player.is_none() || peer.read_needed || peer.socket.transport_read_pending();
+            if !should_read && !peer.dead && peer.closing_at.is_none() {
+                fds[count] = PollFd::new(peer.socket.poll_fd(), PollFlags::POLLIN);
+                scan_indices[count] = scan.len();
+                count += 1;
+            }
+            scan.push((id, should_read));
+        }
+        if count > 0 {
+            let polled = poll(&mut fds[..count], PollTimeout::ZERO).is_ok();
+            for (&index, fd) in scan_indices[..count].iter().zip(&fds[..count]) {
+                // Error/hangup readiness must go through normal receive/EOF.
+                // If the syscall fails, fall back to the full receive sweep.
+                scan[index].1 = !polled || fd.any().unwrap_or(true);
+            }
+        }
+        has_pending
+    }
+
+    fn receive_from(&mut self, id: u64, now: Instant, should_read: bool) {
         let peer = self.peers.get_mut(&id).unwrap();
         if peer.expired(now) {
             peer.dead = true;
@@ -647,10 +749,17 @@ impl Room {
             );
             return;
         }
+        if !should_read {
+            return;
+        }
         let Ok(batch) = peer.socket.receive::<Request>() else {
             peer.dead = true;
             return;
         };
+        #[cfg(target_os = "linux")]
+        {
+            peer.read_needed = !batch.drained;
+        }
         for request in batch.messages {
             if !self.peers.get_mut(&id).unwrap().accept_message(now) {
                 break;
@@ -1503,7 +1612,11 @@ impl Room {
     }
 
     fn advance_vote(&mut self, now: Instant) {
-        if self.player_count() == 0 {
+        if !self
+            .peers
+            .values()
+            .any(|peer| peer.active_player().is_some())
+        {
             self.ballots = Ballots::default();
             return;
         }
@@ -1512,7 +1625,9 @@ impl Room {
             let managed = self.config.managed.is_some();
             if managed && remaining.is_zero() {
                 self.set_map(self.next_map(), now, Some(self.map_deadline));
-            } else if remaining.is_zero() || self.ballots.rtv.len() >= self.majority() {
+            } else if remaining.is_zero()
+                || (!self.ballots.rtv.is_empty() && self.ballots.rtv.len() >= self.majority())
+            {
                 self.start_vote(now, None);
             } else if managed && remaining <= self.config.vote_duration {
                 self.start_vote(now, Some(self.map_deadline));
@@ -1609,12 +1724,12 @@ impl Room {
 
     fn remove_departed(&mut self, now: Instant) {
         let mut departed = Vec::new();
-        for (&id, peer) in &mut self.peers {
+        self.peers.retain(|&id, peer| {
             if (peer.dead || peer.closing_at.is_some()) && peer.player.take().is_some() {
                 departed.push(id);
             }
-        }
-        self.peers.retain(|_, peer| !peer.dead);
+            !peer.dead
+        });
         if departed.is_empty() {
             return;
         }
@@ -1757,42 +1872,75 @@ impl Room {
     }
 
     fn publish_snapshot(&mut self) {
-        let roster = self
+        let active = self
             .peers
             .values()
-            .filter_map(Peer::active_player)
-            .cloned()
-            .collect::<Vec<_>>();
-        if roster.is_empty() {
+            .filter(|peer| peer.active_player().is_some());
+        let (mut count, mut compact_count) = (0, 0);
+        let mut compress_legacy = false;
+        for peer in active.clone() {
+            count += 1;
+            compact_count += usize::from(peer.capabilities.compact_snapshots);
+            compress_legacy |=
+                !peer.capabilities.compact_snapshots && peer.capabilities.compressed_snapshots;
+        }
+        if count == 0 {
             return;
         }
-        let Ok(plain) = encode(&Response::Event {
-            epoch: self.epoch,
-            event: ServerEvent::Players(roster),
-        }) else {
-            return;
+        let compact = if compact_count != 0 {
+            self.snapshot_encoder
+                .encode_compact(self.epoch, count, active.filter_map(Peer::active_player))
+                .ok()
+        } else {
+            None
         };
-        let compressed =
-            if self.peers.values().any(|peer| {
-                peer.capabilities.compressed_snapshots && peer.active_player().is_some()
-            }) {
-                self.snapshot_encoder.encode(&plain)
-            } else {
-                None
-            };
+        let plain = if compact_count < count || compact.is_none() {
+            encode(&SnapshotResponse::Event {
+                epoch: self.epoch,
+                event: SnapshotEvent::Players(SnapshotRoster(&self.peers)),
+            })
+            .ok()
+        } else {
+            None
+        };
+        let compressed = plain
+            .as_ref()
+            .filter(|_| compress_legacy || (compact_count != 0 && compact.is_none()))
+            .and_then(|frame| self.snapshot_encoder.encode(frame));
         for peer in self
             .peers
             .values_mut()
             .filter(|peer| peer.active_player().is_some())
         {
-            let frame = if peer.capabilities.compressed_snapshots {
-                compressed.as_ref().unwrap_or(&plain)
-            } else {
-                &plain
-            };
-            peer.socket.queue_snapshot(Arc::clone(frame));
+            let compact_frame = compact
+                .as_ref()
+                .filter(|_| peer.capabilities.compact_snapshots);
+            let compressed_frame = compressed
+                .as_ref()
+                .filter(|_| peer.capabilities.compressed_snapshots);
+            if let Some(frame) = compact_frame.or(compressed_frame).or(plain.as_ref()) {
+                peer.socket.queue_snapshot(Arc::clone(frame));
+            }
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn poll_empty_room(listener: &TcpListener) -> nix::Result<i32> {
+    use nix::poll::{PollFd, PollFlags, poll};
+    use std::os::fd::AsFd;
+
+    let mut fd = [PollFd::new(listener.as_fd(), PollFlags::POLLIN)];
+    poll(&mut fd, EMPTY_ROOM_POLL_MS)
+}
+
+fn next_room_wake(now: Instant, snapshot: Instant, has_pending: bool) -> Instant {
+    let step = if has_pending {
+        ROOM_ADMISSION_STEP
+    } else {
+        ROOM_ACTIVE_STEP
+    };
+    (now + step).min(snapshot)
 }
 
 fn next_snapshot_deadline(scheduled: Instant, sent: Instant) -> Instant {
@@ -1872,12 +2020,118 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_roster_preserves_the_snapshot_frame() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let now = Instant::now();
+        let mut peers = BTreeMap::new();
+        for (id, name) in [(7, "First"), (9, "Second"), (8, "Leaving")] {
+            let _client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (stream, address) = listener.accept().unwrap();
+            let mut peer = Peer::new(FramedSocket::new(stream).unwrap(), address, now);
+            peer.player = Some(PlayerInfo {
+                id,
+                name: name.into(),
+                state: None,
+                spectating: None,
+                identity: None,
+            });
+            if id == 8 {
+                peer.close(now);
+            }
+            peers.insert(id, peer);
+        }
+        let old = encode(&Response::Event {
+            epoch: 19,
+            event: ServerEvent::Players(vec![
+                peers[&7].player.clone().unwrap(),
+                peers[&9].player.clone().unwrap(),
+            ]),
+        })
+        .unwrap();
+        let borrowed = encode(&SnapshotResponse::Event {
+            epoch: 19,
+            event: SnapshotEvent::Players(SnapshotRoster(&peers)),
+        })
+        .unwrap();
+        assert_eq!(old, borrowed);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn readiness_skips_idle_reads_but_drains_buffered_frames_and_eof() {
+        use std::io::Write;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let now = Instant::now();
+        let mut room = Room::new(RoomConfig::default(), Moderation::default());
+        room.accept_connections(&listener, now).unwrap();
+        let peer = room.peers.get_mut(&1).unwrap();
+        peer.player = Some(PlayerInfo {
+            id: 1,
+            name: "Fixture".into(),
+            state: None,
+            spectating: None,
+            identity: None,
+        });
+
+        let mut scan = Vec::new();
+        room.receive_from(1, now, true);
+        room.collect_receive_scan(&listener, &mut scan);
+        assert_eq!(scan, [(1, false)]);
+
+        let heartbeat = encode(&Request::Heartbeat).unwrap();
+        // A single read brings in every byte, including the frame beyond the
+        // framed socket's 64-message receive budget.
+        client.write_all(&heartbeat.repeat(65)).unwrap();
+        room.collect_receive_scan(&listener, &mut scan);
+        assert_eq!(scan, [(1, true)]);
+        room.receive_from(1, now, true);
+        assert_eq!(room.peers[&1].message_count, 64);
+        room.collect_receive_scan(&listener, &mut scan);
+        assert_eq!(scan, [(1, true)]);
+        room.receive_from(1, now, true);
+        assert_eq!(room.peers[&1].message_count, 65);
+        room.collect_receive_scan(&listener, &mut scan);
+        assert_eq!(scan, [(1, false)]);
+
+        drop(client);
+        room.collect_receive_scan(&listener, &mut scan);
+        assert_eq!(scan, [(1, true)]);
+        room.receive_from(1, now, true);
+        assert!(room.peers[&1].closing_at.is_some());
+    }
+
+    #[test]
     fn snapshot_deadline_keeps_phase_after_small_delays() {
         let start = Instant::now();
         let at = |ms| start + Duration::from_millis(ms);
         assert_eq!(next_snapshot_deadline(at(0), at(4)), at(50));
         assert_eq!(next_snapshot_deadline(at(50), at(60)), at(100));
         assert_eq!(next_snapshot_deadline(at(100), at(125)), at(150));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_room_wake_honors_snapshot_and_pending_admission() {
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        assert_eq!(next_room_wake(at(0), at(50), false), at(20));
+        assert_eq!(next_room_wake(at(20), at(50), false), at(40));
+        assert_eq!(next_room_wake(at(40), at(50), false), at(50));
+        assert_eq!(next_room_wake(at(20), at(50), true), at(30));
+        assert_eq!(next_snapshot_deadline(at(50), at(53)), at(100));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn empty_room_listener_reports_a_waiting_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let _client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        assert_eq!(poll_empty_room(&listener), Ok(1));
+        listener.accept().unwrap();
     }
 
     #[test]
@@ -1907,7 +2161,7 @@ mod tests {
         let peer = room.peers.get_mut(&1).unwrap();
         assert!(peer.accept_message(now + JOIN_TIMEOUT / 2));
         assert!(peer.expired(now + JOIN_TIMEOUT));
-        room.receive_from(1, now + JOIN_TIMEOUT);
+        room.receive_from(1, now + JOIN_TIMEOUT, false);
         room.remove_departed(now + JOIN_TIMEOUT);
         assert!(room.can_accept("127.0.0.1".parse().unwrap()));
     }
@@ -1954,7 +2208,7 @@ mod tests {
         assert_eq!(receipt(&room), (started, Some(first)));
         request(&mut room, Request::HeartbeatReceipt(first), at(12));
         assert_eq!(receipt(&room), (at(12), None));
-        room.receive_from(1, at(20));
+        room.receive_from(1, at(20), false);
         assert_eq!(room.player_count(), 1);
 
         request(&mut room, Request::Heartbeat, at(22));
@@ -1965,7 +2219,7 @@ mod tests {
         request(&mut room, Request::Heartbeat, at(28));
         request(&mut room, Request::HeartbeatReceipt(first), at(31));
         assert_eq!(receipt(&room), (at(12), Some(second)));
-        room.receive_from(1, at(32));
+        room.receive_from(1, at(32), false);
         room.remove_departed(at(32));
         assert_eq!(room.player_count(), 0);
     }
