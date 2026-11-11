@@ -2,11 +2,35 @@
 
 The room server relays movement snapshots at a target of 20 Hz. The desktop runs the movement simulation at 66⅔ ticks per second, and ranked verification replays movement separately.
 
+## Public rooms
+
+The public directory offers 88 slots across three rooms. The catalog currently has maps through T7.
+
+| Slots | Rotation | Maps in rotation |
+| ---: | --- | ---: |
+| 64 | T1–T2 | 52 |
+| 16 | T3–T5 | 11 |
+| 8 | T6+ | 8 |
+
 ## How we measured
 
 Native headless clients joined over TLS with signed-in identities and offered distinct movement poses at a 50 ms interval. Every listed test slot was occupied. Sampling started after an eight-second warmup. Sign-ins and ranked submissions ran alongside movement traffic. The records service verified native replay fixtures and returned save receipts.
 
 Snapshot rate is the median receive rate per room, shown as a range across rooms. Snapshot gap is the time between roster arrivals. Pose age is the time from offering a sampled player's pose to receiving it in another client's roster, measured on the load generator's shared monotonic clock. It includes client queues, both network legs, and server scheduling. Displayed latency also depends on interpolation and rendering.
+
+## Full public layout
+
+All 88 slots in the 64 + 16 + 8 layout stayed occupied by moving, signed-in clients for 180 seconds. Every client received 20.00 snapshots per second. The run had zero unexpected disconnects and completed all 16 sign-ins and 12 ranked saves under full load.
+
+| Snapshot gap p95 | Pose age p95 / p99 | Sign-in p95 | Ranked save p95 |
+| ---: | ---: | ---: | ---: |
+| 52.85 ms | 102 / 109 ms | 433 ms | 1.44 s |
+
+| Mean CPU | Peak five-second CPU | Mean outbound | Minimum available RAM |
+| ---: | ---: | ---: | ---: |
+| 11.63% | 32.97% | 64.39 Mb/s | 451 MiB |
+
+The host counters recorded zero out-of-memory events, swap-outs, and network allowance drops. Full occupancy used burst capacity. The final minute averaged 10.65% CPU and 64.06 Mb/s outbound, still slightly above the sustained baselines of 10% CPU and 64 Mb/s. The six-minute 80-player result below fit within both budgets.
 
 ## Results
 
@@ -52,4 +76,43 @@ Eight rooms held 64 moving clients each for 360 seconds with zero disconnects. A
 
 The machine averaged 38.04% CPU and 465.70 Mb/s outbound. Peak five-second CPU was 55.08%, and minimum available RAM was 274 MiB. The host samples recorded zero out-of-memory events, swap-outs, and network allowance drops.
 
-The run used about 3.8 times the sustained CPU budget and 7.3 times the sustained outbound budget. It ended at six minutes with burst reserve available. Four rooms of 16 were the largest tested layout that averaged within both sustained budgets.
+The run used about 3.8 times the sustained CPU budget and 7.3 times the sustained outbound budget. It ended at six minutes with burst reserve available.
+
+## Mixed room sizes
+
+Two later six-minute runs used the same class of machine and filled every listed slot with a moving, signed-in client. All clients stayed connected through the measurement window and through a renewal of their room tickets. Each run also completed 16 sign-ins and 12 ranked saves under full load.
+
+| Players | Room sizes | Snapshot rate | Gap p95 | Pose age p95 / p99 | Sign-in p95 | Ranked save p95 |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 80 | 64 + 16 | 20.00 Hz | 53.17 ms | 102 / 108 ms | 416 ms | 1.32 s |
+| 96 | 64 + 16 + 16 | 20.00 Hz | 52.85 ms | 100 / 108 ms | 432 ms | 1.33 s |
+
+| Players | Mean CPU | Peak five-second CPU | Mean outbound | Minimum available RAM |
+| ---: | ---: | ---: | ---: | ---: |
+| 80 | 8.85% | 11.61% | 62.89 Mb/s | 419 MiB |
+| 96 | 11.33% | 32.34% | 67.40 Mb/s | 424 MiB |
+
+The 80-player layout fit within both sustained budgets over the measurement window, with 1.11 Mb/s of outbound headroom. The 96-player layout used burst capacity. Its final minute still averaged 11.30% CPU and 67.04 Mb/s outbound. The 768-player result above is the highest completed brief test in this report. The 80-player mixed layout is the largest measured to average within both sustained budgets.
+
+## Four-room capacity checks
+
+Four follow-up runs filled four rooms simultaneously. Each run completed 16 sign-ins and 12 ranked saves with zero unexpected disconnects, out-of-memory events, or network allowance drops.
+
+| Players | Room sizes | Window | Snapshot rate | Gap p95 | Pose age p95 / p99 | Mean CPU | Mean outbound | Minimum available RAM |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 64 | 4 × 16 | 155 s | 20.00 Hz | 52.99 ms | 97 / 104 ms | 8.62% | 18.24 Mb/s | 338 MiB |
+| 128 | 4 × 32 | 155 s | 19.99–20.00 Hz | 52.66 ms | 96 / 105 ms | 15.20% | 64.31 Mb/s | 299 MiB |
+| 144 | 64 + 32 + 16 + 16 | 150 s | 20.00 Hz | 52.58 ms | 100 / 106 ms | 13.76% | 83.93 Mb/s | 447 MiB |
+| 256 | 4 × 64 | 120 s | 19.99–20.00 Hz | 52.62 ms | 103 / 109 ms | 24.70% | 233.31 Mb/s | 289 MiB |
+
+## Reconnects and voted map changes
+
+A separate two-minute run started with 96 moving, signed-in clients across three tiered rotations. Nine clients intentionally disconnected and rejoined, with six abrupt drops and three clean leaves. Each rejoin used a fresh room ticket and the same account. The rosters returned to full in 1.15–1.21 s, including a deliberate one-second wait. There were zero unexpected disconnects.
+
+| Slots | Tiers tested | Votes needed | Clients notified | Full movement roster after first notification |
+| ---: | --- | ---: | ---: | ---: |
+| 64 | T1–T2 | 33 | 64/64 | 167 ms |
+| 16 | T3–T5 | 9 | 16/16 | 149 ms |
+| 16 | T6–T7 | 9 | 16/16 | 110 ms |
+
+The recovery measurements cover server notifications and movement relays to headless clients. Desktop map loading also depends on cached assets, downloads, and rendering. The test recorded 20.00 Hz room medians, a 53.14 ms worst room p95 snapshot gap, and 98 ms worst room p95 pose age. Sixteen sign-ins and 12 ranked saves succeeded. The machine averaged 13.25% CPU and 67.56 Mb/s outbound, with a minimum of 319 MiB available RAM.
