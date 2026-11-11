@@ -1,0 +1,22 @@
+[Unit]
+Description=Surfd accounts and ranked records
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+DynamicUser=yes
+StateDirectory=surfd-records
+StateDirectoryMode=0700
+CacheDirectory=surfd-maps
+CacheDirectoryMode=0700
+EnvironmentFile=/etc/surfd/records.env
+ExecStart=/usr/local/bin/surf-records --bind 127.0.0.1:27166 --data ${STATE_DIRECTORY} --maps ${CACHE_DIRECTORY}
+NoNewPrivileges=yes
+PrivateTmp=yes
+UMask=0077
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=multi-user.target

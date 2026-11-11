@@ -1,0 +1,24 @@
+[Unit]
+Description=Surfd managed room %i
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+DynamicUser=yes
+StateDirectory=surfd-rooms/%i
+StateDirectoryMode=0700
+Environment=SURF_ROOM_ID=%i
+EnvironmentFile=/etc/surfd/rooms/%i.env
+LoadCredential=fullchain.pem:/etc/surfd/rooms/%i/fullchain.pem
+LoadCredential=privkey.pem:/etc/surfd/rooms/%i/privkey.pem
+ExecStart=/usr/local/bin/surf-server --bind ${SURF_ROOM_BIND} --name ${SURF_ROOM_NAME} --map ${SURF_ROOM_MAP} --rotation ${SURF_ROOM_ROTATION} --capacity ${SURF_ROOM_CAPACITY} --tls-cert ${CREDENTIALS_DIRECTORY}/fullchain.pem --tls-key ${CREDENTIALS_DIRECTORY}/privkey.pem --moderation-file ${STATE_DIRECTORY}/moderation.json
+NoNewPrivileges=yes
+PrivateTmp=yes
+UMask=0077
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=5s
+
+[Install]
+WantedBy=multi-user.target

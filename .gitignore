@@ -1,0 +1,8 @@
+/target/
+/maps/
+/.env
+/.env.*
+*.env
+*.pem
+*.key
+*.sqlite3*
