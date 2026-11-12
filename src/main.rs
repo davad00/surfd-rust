@@ -4,6 +4,7 @@ mod bench;
 mod bench_render_trace;
 pub(crate) use bevy_surf::loadout as cosmetics;
 mod flythrough;
+mod knife_asset;
 mod library;
 mod menu;
 mod online;

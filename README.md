@@ -38,7 +38,7 @@ The desktop UI embeds the full Fira Mono face so HUD punctuation and menu symbol
 
 The player model uses textures from Wobble Blocks’ CC0 character pack. [Character attribution](assets/agent/README.md)
 
-The fixed-blade knife, glove, and three finish patterns are original project artwork. The Store renders its previews from the same knife mesh used in the game.
+The knife and three textured finishes are original project artwork made in Sceneplane. The first-person hand and sleeve use the geometry and texture atlas of the [player avatar](assets/agent/README.md). The Store previews are rendered from the in-game knife geometry.
 
 Original Surfd command recordings can be converted with the optional replay tools. Install Bun and set `SURF_REFERENCE_MIRROR` to a separately obtained reference directory containing `config.json` and the original `assets/ghost.worker-*.js`. This enables **Watch original record** in Practice and `--replay FILE.json` for original command recordings. To convert a recording separately, run `bun tools/import-reference-replay.ts FILE.json GEOMETRY.json.gz TRACK.json` and add `--bonus-pack PACK.json.gz` for a bonus. The Rust client opens the resulting `TRACK.json` directly on the matching catalog revision. During playback, Space pauses, Right Arrow steps one command, R restarts, and Backspace exits. `--inspect-replay FILE.json` prints the result without opening a window.
 

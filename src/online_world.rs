@@ -393,7 +393,7 @@ fn player_material(atlas: Handle<Image>) -> StandardMaterial {
     }
 }
 
-fn agent_atlas(tint: Option<[u8; 3]>) -> Image {
+pub(crate) fn agent_atlas(tint: Option<[u8; 3]>) -> Image {
     let mut atlas = image::load_from_memory(include_bytes!("../assets/agent/atlas.png"))
         .expect("embedded Surfd agent atlas")
         .into_rgba8();
