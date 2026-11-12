@@ -1,0 +1,360 @@
+{
+  "version": 1,
+  "bsp_sha256": "de1eeed57157b8397cba14a3ed37ead8e45edfea47420c3b8dc3a045ded5b3f9",
+  "mode": "surf",
+  "timer": "shavit",
+  "tier": 1,
+  "tracks": [
+    {
+      "id": 0,
+      "checkpoints_required": true,
+      "checkpoints_ordered": true,
+      "bhop_enabled": true,
+      "limit_start_ground_speed": false
+    },
+    {
+      "id": 1,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": true,
+      "limit_start_ground_speed": false
+    }
+  ],
+  "zones": [
+    {
+      "kind": "start",
+      "track": 0,
+      "points": [
+        [
+          -13721,
+          703
+        ],
+        [
+          -13015,
+          703
+        ],
+        [
+          -13015,
+          1345
+        ],
+        [
+          -13721,
+          1345
+        ]
+      ],
+      "bottom": 13768,
+      "height": 178,
+      "hook_target": "mapstartzone"
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "points": [
+        [
+          -8441,
+          703
+        ],
+        [
+          -7767,
+          703
+        ],
+        [
+          -7767,
+          1345
+        ],
+        [
+          -8441,
+          1345
+        ]
+      ],
+      "bottom": 13176,
+      "height": 178,
+      "index": 2,
+      "hook_target": "stage2zone"
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "points": [
+        [
+          -2057,
+          703
+        ],
+        [
+          -1383,
+          703
+        ],
+        [
+          -1383,
+          1345
+        ],
+        [
+          -2057,
+          1345
+        ]
+      ],
+      "bottom": 12328,
+      "height": 178,
+      "index": 3,
+      "hook_target": "stage3zone"
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "points": [
+        [
+          8215,
+          703
+        ],
+        [
+          8889,
+          703
+        ],
+        [
+          8889,
+          1345
+        ],
+        [
+          8215,
+          1345
+        ]
+      ],
+      "bottom": 10320,
+      "height": 178,
+      "index": 4,
+      "hook_target": "stage4zone"
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "points": [
+        [
+          7543,
+          703
+        ],
+        [
+          8217,
+          703
+        ],
+        [
+          8217,
+          1345
+        ],
+        [
+          7543,
+          1345
+        ]
+      ],
+      "bottom": 8480,
+      "height": 178,
+      "index": 5,
+      "hook_target": "stage5zone"
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "points": [
+        [
+          -3481,
+          703
+        ],
+        [
+          -2807,
+          703
+        ],
+        [
+          -2807,
+          1345
+        ],
+        [
+          -3481,
+          1345
+        ]
+      ],
+      "bottom": 7312,
+      "height": 178,
+      "index": 6,
+      "hook_target": "stage6zone"
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "points": [
+        [
+          -8705,
+          703
+        ],
+        [
+          -8031,
+          703
+        ],
+        [
+          -8031,
+          1345
+        ],
+        [
+          -8705,
+          1345
+        ]
+      ],
+      "bottom": 5344,
+      "height": 178,
+      "index": 7,
+      "hook_target": "stage7zone"
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "points": [
+        [
+          -8033,
+          703
+        ],
+        [
+          -7359,
+          703
+        ],
+        [
+          -7359,
+          1345
+        ],
+        [
+          -8033,
+          1345
+        ]
+      ],
+      "bottom": 2912,
+      "height": 178,
+      "index": 8,
+      "hook_target": "stage8zone"
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "points": [
+        [
+          -817,
+          703
+        ],
+        [
+          321,
+          703
+        ],
+        [
+          321,
+          1345
+        ],
+        [
+          -817,
+          1345
+        ]
+      ],
+      "bottom": 712,
+      "height": 178,
+      "index": 9,
+      "hook_target": "stage9zone"
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "points": [
+        [
+          6811,
+          703
+        ],
+        [
+          7485,
+          703
+        ],
+        [
+          7485,
+          1345
+        ],
+        [
+          6811,
+          1345
+        ]
+      ],
+      "bottom": -692,
+      "height": 178,
+      "index": 10,
+      "hook_target": "stage10zone"
+    },
+    {
+      "kind": "end",
+      "track": 0,
+      "points": [
+        [
+          -3201,
+          383
+        ],
+        [
+          -2207,
+          383
+        ],
+        [
+          -2207,
+          1665
+        ],
+        [
+          -3201,
+          1665
+        ]
+      ],
+      "bottom": -3200,
+      "height": 578,
+      "hook_target": "mapendzone"
+    },
+    {
+      "kind": "start",
+      "track": 1,
+      "points": [
+        [
+          -5585.00048828125,
+          726.998291015625
+        ],
+        [
+          -5070.9970703125,
+          726.998291015625
+        ],
+        [
+          -5070.9970703125,
+          1625.02197265625
+        ],
+        [
+          -5585.00048828125,
+          1625.02197265625
+        ]
+      ],
+      "bottom": 9024,
+      "height": 210,
+      "hook_target": "bonusstartzone"
+    },
+    {
+      "kind": "end",
+      "track": 1,
+      "points": [
+        [
+          -5585.00048828125,
+          726.998291015625
+        ],
+        [
+          -5070.9970703125,
+          726.998291015625
+        ],
+        [
+          -5070.9970703125,
+          1625.02197265625
+        ],
+        [
+          -5585.00048828125,
+          1625.02197265625
+        ]
+      ],
+      "bottom": 9408,
+      "height": 210,
+      "hook_target": "bonusendzone"
+    }
+  ],
+  "entity_output_fixes": []
+}

@@ -48,6 +48,46 @@ fn main() -> ExitCode {
 fn launch() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let flag = args.next();
+    if std::env::var_os("SURF_MAP_CATALOG").is_some() {
+        catalog::configure_from_env()?;
+    } else if flag
+        .as_deref()
+        .and_then(|arg| arg.to_str())
+        .is_none_or(|flag| {
+            matches!(
+                flag,
+                "--catalog"
+                    | "--inspect-catalog"
+                    | "--replay"
+                    | "--inspect-replay"
+                    | "--bench-replay"
+                    | "--check-room"
+            )
+        })
+    {
+        let directory = library::data_directory();
+        let cache = directory.join(records_client::community_catalog_cache_name());
+        match records_client::community_catalog().and_then(|data| {
+            catalog::configure_community(&data)?;
+            Ok(data)
+        }) {
+            Ok(data) => {
+                if let Err(error) = catalog::cache_catalog(&cache, &data) {
+                    eprintln!("Could not cache community maps: {error}");
+                }
+            }
+            Err(error) => {
+                if cache.is_file() {
+                    if let Err(cache_error) = catalog::read_catalog(&cache)
+                        .and_then(|data| catalog::configure_community(&data))
+                    {
+                        eprintln!("Could not read cached community maps: {cache_error}");
+                    }
+                }
+                eprintln!("Could not refresh community maps: {error}");
+            }
+        }
+    }
     let mut playback = None;
     let course = match flag.as_deref().and_then(|arg| arg.to_str()) {
         None if flag.is_none() => Course::practice(),

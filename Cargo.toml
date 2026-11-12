@@ -1,6 +1,6 @@
 [package]
 name = "bevy-surf"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 default-run = "bevy-surf"
 
@@ -18,8 +18,9 @@ client = [
     "bevy/ui_picking",
     "bevy/system_clipboard",
     "dep:ureq",
+    "dep:bzip2",
 ]
-records-service = ["dep:argon2", "dep:rusqlite", "dep:tiny_http", "dep:ureq"]
+records-service = ["dep:argon2", "dep:rusqlite", "dep:tiny_http", "dep:ureq", "dep:bzip2"]
 client-audio = ["client", "bevy/bevy_audio"]
 
 [dependencies]
@@ -27,6 +28,7 @@ bevy = { version = "0.20.1", optional = true, default-features = false, features
 bevy_math = { version = "0.20.1", default-features = false, features = ["std"] }
 lzma-rs = "0.3"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+bzip2 = { version = "0.6.1", optional = true }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }

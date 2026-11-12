@@ -19,6 +19,8 @@ pub mod replay;
 pub mod rules;
 pub mod server;
 pub mod session;
+#[cfg(any(feature = "client", feature = "records-service"))]
+mod shavit_download;
 pub mod social_protocol;
 #[cfg(feature = "records-service")]
 pub mod social_service;

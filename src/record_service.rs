@@ -504,6 +504,10 @@ impl Service {
         let parts: Vec<_> = route.trim_start_matches('/').split('/').collect();
         match (method, parts.as_slice()) {
             (Method::Get, ["v1", "status"]) => encode(&serde_json::json!({"version": 1})),
+            (Method::Get, ["v1", "map-catalog"]) => match catalog::community_catalog() {
+                Some(catalog) => encode(catalog),
+                None => encode(&serde_json::json!({"version": 1, "maps": []})),
+            },
             (Method::Get, ["v1", "ready"]) => {
                 let db = self.db.lock().map_err(internal)?;
                 db.query_row(
@@ -1357,7 +1361,15 @@ impl Service {
 
     fn board_revision(&self, map: &str, bonus: Option<u16>) -> Result<String> {
         let revision = if let Some(bonus) = bonus {
-            self.course(map)?.board_revision(Some(bonus))
+            if let Some(entry) = catalog::find(map).filter(|entry| entry.download.is_some()) {
+                entry
+                    .source_bsp
+                    .as_ref()
+                    .filter(|_| usize::from(bonus) <= entry.bonuses)
+                    .and_then(|source| source.bonus_board_revision(bonus))
+            } else {
+                self.course(map)?.board_revision(Some(bonus))
+            }
         } else if map == "Downline" {
             Course::practice().board_revision(None)
         } else {
@@ -1465,18 +1477,24 @@ impl Service {
     }
 
     fn course(&self, map: &str) -> Result<Arc<Course>> {
-        let mut cache = self.courses.lock().map_err(internal)?;
-        if let Some(index) = cache.iter().position(|(name, _)| name == map) {
-            let entry = cache.remove(index).expect("index from cache");
-            let result = entry.1.clone();
-            cache.push_front(entry);
-            return Ok(result);
+        {
+            let mut cache = self.courses.lock().map_err(internal)?;
+            if let Some(index) = cache.iter().position(|(name, _)| name == map) {
+                let entry = cache.remove(index).expect("index from cache");
+                let result = entry.1.clone();
+                cache.push_front(entry);
+                return Ok(result);
+            }
         }
         let course = Arc::new(
             catalog::files::load_ranked(&self.maps, map).map_err(|error| {
                 ApiError::new(503, format!("Ranked course is unavailable: {error}"))
             })?,
         );
+        let mut cache = self.courses.lock().map_err(internal)?;
+        if let Some((_, loaded)) = cache.iter().find(|(name, _)| name == map) {
+            return Ok(loaded.clone());
+        }
         cache.push_front((map.into(), course.clone()));
         cache.truncate(2);
         Ok(course)

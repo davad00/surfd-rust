@@ -1,5 +1,5 @@
 use bevy_surf::{
-    catalog::MapMode,
+    catalog::{self, MapMode},
     network::{RoomTicketKey, RoomTlsConfig},
     server::{AdminCommand, RoomConfig, RoomControl, RoomServer},
 };
@@ -13,12 +13,14 @@ use std::{
 
 const HELP: &str = "\
 Usage: surf-server [--bind IP:PORT] [--name NAME] [--mode surf|bhop] [--map MAP_ID]
-                   [--rotation MAP_ID,MAP_ID] [--capacity N]
+                   [--rotation MAP_ID,MAP_ID | --rotation-tiers N|N-M|N+] [--capacity N]
                    [--map-minutes N] [--vote-seconds N]
                    [--tls-cert PEM --tls-key PEM] [--moderation-file PATH]
 
 The default bind is 127.0.0.1:27165.
-Rooms default to Surf. Bhop rooms require a Bhop start map and rotation.
+Rooms default to Surf. With --rotation-tiers, the rotation includes every ranked catalog
+map matching the room mode and tier selection. If --map is omitted, it starts on the
+first match. Bhop rooms using an explicit list require a Bhop start map.
 Set SURF_ROOM_ID and SURF_ROOM_TICKET_KEY together for a managed room.
 Non-loopback managed rooms require TLS. Join with tls://host:port.
 Press Ctrl+C to stop the room and notify connected players.
@@ -47,9 +49,9 @@ fn run() -> Result<(), String> {
         println!("{HELP}");
         return Ok(());
     };
+    catalog::configure_from_env()?;
     let name = config.name.clone();
     let mode = config.mode;
-    let map = config.map.clone();
     let server =
         RoomServer::bind(config).map_err(|error| format!("Could not start room: {error}"))?;
     let control = server.control();
@@ -57,9 +59,10 @@ fn run() -> Result<(), String> {
     ctrlc::set_handler(move || signal_control.shutdown())
         .map_err(|error| format!("Could not install the room shutdown handler: {error}"))?;
     println!(
-        "{name} ({}) is listening on {} with {map}.",
+        "{name} ({}) is listening on {} with {}.",
         mode.label(),
-        server.local_addr()
+        server.local_addr(),
+        server.starting_map()
     );
     println!("Enter 'help' for local moderation commands.");
     thread::Builder::new()
@@ -74,6 +77,7 @@ fn run() -> Result<(), String> {
 fn parse_args() -> Result<Option<RoomConfig>, String> {
     let mut config = RoomConfig::default();
     let mut room_name = None;
+    let mut start_map = None;
     let mut rotation_configured = false;
     let mut tls_certificate = std::env::var_os("SURF_ROOM_TLS_CERT").map(PathBuf::from);
     let mut tls_key = std::env::var_os("SURF_ROOM_TLS_KEY").map(PathBuf::from);
@@ -96,7 +100,7 @@ fn parse_args() -> Result<Option<RoomConfig>, String> {
             "--mode" => {
                 config.mode = MapMode::parse(&value).ok_or("Room mode must be surf or bhop.")?
             }
-            "--map" => config.map = value.trim().to_ascii_lowercase(),
+            "--map" => start_map = Some(value.trim().to_ascii_lowercase()),
             "--rotation" => {
                 rotation_configured = true;
                 config.rotation = value
@@ -105,6 +109,7 @@ fn parse_args() -> Result<Option<RoomConfig>, String> {
                     .map(str::to_ascii_lowercase)
                     .collect();
             }
+            "--rotation-tiers" => config.rotation_tiers = Some(value.parse()?),
             "--capacity" => {
                 config.capacity = value.parse().map_err(|_| "Invalid player capacity.")?
             }
@@ -121,6 +126,14 @@ fn parse_args() -> Result<Option<RoomConfig>, String> {
             "--moderation-file" => config.moderation_file = Some(PathBuf::from(value)),
             _ => return Err(format!("Unknown option {flag}.")),
         }
+    }
+    if config.rotation_tiers.is_some() {
+        if rotation_configured {
+            return Err("Choose either --rotation or --rotation-tiers.".into());
+        }
+        config.map = start_map.unwrap_or_default();
+    } else if let Some(start_map) = start_map {
+        config.map = start_map;
     }
     if config.mode == MapMode::Bhop && !rotation_configured {
         config.rotation.clear();

@@ -1,0 +1,176 @@
+{
+  "version": 1,
+  "bsp_sha256": "6b62d73ed2fae2523d0d130ef5d0d46819eef42162503889a2e5ea348a806f6b",
+  "mode": "surf",
+  "timer": "shavit",
+  "tier": 2,
+  "tracks": [
+    {
+      "id": 0,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    },
+    {
+      "id": 1,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    }
+  ],
+  "zones": [
+    {
+      "kind": "start",
+      "track": 1,
+      "points": [
+        [
+          1855,
+          -10721
+        ],
+        [
+          2753,
+          -10721
+        ],
+        [
+          2753,
+          -10367
+        ],
+        [
+          1855,
+          -10367
+        ]
+      ],
+      "bottom": 13136,
+      "height": 284,
+      "hook_target": "bonus_startzone"
+    },
+    {
+      "kind": "start",
+      "track": 0,
+      "points": [
+        [
+          383,
+          5183
+        ],
+        [
+          897,
+          5183
+        ],
+        [
+          897,
+          5697
+        ],
+        [
+          383,
+          5697
+        ]
+      ],
+      "bottom": 7616,
+      "height": 318,
+      "hook_target": "map_startzone"
+    },
+    {
+      "kind": "end",
+      "track": 0,
+      "points": [
+        [
+          3071,
+          2783
+        ],
+        [
+          3393,
+          2783
+        ],
+        [
+          3393,
+          3361
+        ],
+        [
+          3071,
+          3361
+        ]
+      ],
+      "bottom": -8512,
+      "height": 382,
+      "hook_target": "map_endzone"
+    },
+    {
+      "kind": "end",
+      "track": 1,
+      "points": [
+        [
+          -3289,
+          783
+        ],
+        [
+          -2295,
+          783
+        ],
+        [
+          -2295,
+          1761
+        ],
+        [
+          -3289,
+          1761
+        ]
+      ],
+      "bottom": 7336,
+      "height": 122,
+      "hook_target": "bonus_endzone"
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "points": [
+        [
+          4864,
+          -3648
+        ],
+        [
+          5024,
+          -3648
+        ],
+        [
+          5024,
+          -2560
+        ],
+        [
+          4864,
+          -2560
+        ]
+      ],
+      "bottom": 1919.0899658203125,
+      "height": 1216.9100341796875,
+      "index": 1
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "points": [
+        [
+          -7040,
+          -3828
+        ],
+        [
+          -6976,
+          -3828
+        ],
+        [
+          -6976,
+          -2448
+        ],
+        [
+          -7040,
+          -2448
+        ]
+      ],
+      "bottom": -4839.97021484375,
+      "height": 655.97021484375,
+      "index": 2
+    }
+  ],
+  "entity_output_fixes": []
+}

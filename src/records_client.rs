@@ -23,6 +23,37 @@ pub fn configured_endpoint() -> String {
     std::env::var("SURF_RECORDS_URL").unwrap_or_else(|_| default.into())
 }
 
+pub fn community_catalog() -> Result<Vec<u8>, String> {
+    let (agent, url) = target(
+        &configured_endpoint(),
+        "/v1/map-catalog",
+        Duration::from_secs(3),
+    )?;
+    let mut response = agent.get(url).call().map_err(|error| error.to_string())?;
+    if response.status() != 200 {
+        return Err(format!("Map catalog returned HTTP {}", response.status()));
+    }
+    let limit = bevy_surf::catalog::MAX_CATALOG_BYTES;
+    let mut bytes = Vec::new();
+    response
+        .body_mut()
+        .as_reader()
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > limit {
+        return Err("Community map catalog exceeds 2 MiB".into());
+    }
+    Ok(bytes)
+}
+
+pub fn community_catalog_cache_name() -> String {
+    use sha2::{Digest, Sha256};
+    let endpoint = configured_endpoint();
+    let endpoint = endpoint.trim().trim_end_matches('/').to_ascii_lowercase();
+    format!(".community-catalog-v1-{:x}.json", Sha256::digest(endpoint))
+}
+
 pub struct RetryableRequestFailure {
     pub message: String,
     pub retry_after: Option<Duration>,

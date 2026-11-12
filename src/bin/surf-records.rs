@@ -48,5 +48,6 @@ fn run() -> Result<(), String> {
         println!("Records backup saved to {}", destination.display());
         return Ok(());
     }
+    bevy_surf::catalog::configure_from_env()?;
     bevy_surf::record_service::serve(address, &data, &maps)
 }

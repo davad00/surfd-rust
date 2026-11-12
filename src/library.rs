@@ -24,6 +24,10 @@ fn environment_directory(name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+pub(crate) fn data_directory() -> PathBuf {
+    environment_directory("SURF_DATA").unwrap_or_else(default_data_directory)
+}
+
 fn default_data_directory() -> PathBuf {
     #[cfg(windows)]
     let base = environment_directory("LOCALAPPDATA").or_else(|| {
@@ -54,7 +58,7 @@ pub enum MapSource {
     Source(PathBuf),
     RankedBsp {
         map: String,
-        path: PathBuf,
+        path: Option<PathBuf>,
     },
     Catalog {
         slug: String,
@@ -89,7 +93,11 @@ impl MapSource {
             }
             Self::RankedBsp { map, path } => {
                 let entry = catalog::find(&map).ok_or("Unknown ranked Source map")?;
-                source_bsp::load_ranked(&path, entry)
+                if let Some(path) = path {
+                    return source_bsp::load_ranked(&path, entry);
+                }
+                status(format!("Loading {} and its verified timer…", entry.name));
+                catalog::files::load_source(directory, entry, true)
             }
             Self::Catalog {
                 slug,
@@ -291,7 +299,7 @@ impl MapLibrary {
     }
 
     pub fn read() -> Self {
-        let directory = environment_directory("SURF_DATA").unwrap_or_else(default_data_directory);
+        let directory = data_directory();
         let mut roots = vec![directory.clone()];
         if let Ok(exe) = std::env::current_exe()
             && let Some(parent) = exe.parent()
@@ -317,7 +325,7 @@ impl MapLibrary {
         entries.extend(
             catalog
                 .iter()
-                .filter(|map| map.source_bsp.is_none())
+                .filter(|map| map.source_bsp.is_none() || map.download.is_some())
                 .cloned()
                 .map(|map| {
                     let bonuses = if map.bonuses > 0 {
@@ -325,18 +333,42 @@ impl MapLibrary {
                     } else {
                         String::new()
                     };
+                    let source = if let Some(download) = &map.download {
+                        let stages = if download.stages > 1 {
+                            format!(" · {} stages", download.stages)
+                        } else {
+                            String::new()
+                        };
+                        let checkpoints = if download.checkpoints > 0 {
+                            format!(" · {} checkpoints", download.checkpoints)
+                        } else {
+                            String::new()
+                        };
+                        (
+                            MapSource::RankedBsp {
+                                map: map.id.clone(),
+                                path: None,
+                            },
+                            format!("{stages}{checkpoints}"),
+                        )
+                    } else {
+                        (
+                            MapSource::Catalog {
+                                slug: map.slug,
+                                geometry: map.geometry,
+                                visual: map.visual,
+                                bonus_pack: map.bonus_pack,
+                            },
+                            String::new(),
+                        )
+                    };
                     MapEntry {
                         id: map.id,
                         name: map.name,
-                        detail: format!("{} · {}{bonuses}", map.author, map.layout),
+                        detail: format!("{} · {}{}{bonuses}", map.author, map.layout, source.1),
                         mode: map.mode,
                         tier: map.tier,
-                        source: MapSource::Catalog {
-                            slug: map.slug,
-                            geometry: map.geometry,
-                            visual: map.visual,
-                            bonus_pack: map.bonus_pack,
-                        },
+                        source: source.0,
                     }
                 }),
         );
@@ -372,7 +404,8 @@ impl MapLibrary {
             let mode = metadata
                 .mode
                 .unwrap_or_else(|| local_map::default_mode(&path, &name));
-            if let Some(map) = catalog::find(&name).filter(|map| map.source_bsp.is_some())
+            if let Some(map) = catalog::find(&name)
+                .filter(|map| map.source_bsp.is_some() && map.download.is_none())
                 && !ranked_names.contains(&map.id)
                 && source_bsp::ranked_files_match(&path, map)
             {
@@ -385,7 +418,7 @@ impl MapLibrary {
                     tier: map.tier.or(metadata.tier),
                     source: MapSource::RankedBsp {
                         map: map.id.clone(),
-                        path: path.clone(),
+                        path: Some(path.clone()),
                     },
                 });
             }

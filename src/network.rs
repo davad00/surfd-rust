@@ -249,6 +249,8 @@ pub(crate) struct RoomCapabilities {
     pub bhop_rooms: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub loadouts: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub community_maps: bool,
 }
 
 const CLIENT_CAPABILITIES: RoomCapabilities = RoomCapabilities {
@@ -257,6 +259,7 @@ const CLIENT_CAPABILITIES: RoomCapabilities = RoomCapabilities {
     heartbeat_receipts: true,
     bhop_rooms: true,
     loadouts: true,
+    community_maps: false,
 };
 
 #[derive(Serialize, Deserialize)]
@@ -677,17 +680,22 @@ fn client_worker(
 ) -> io::Result<()> {
     let mut socket = connect_socket(address)?;
     socket.accept_compact_snapshots();
+    let capabilities = RoomCapabilities {
+        community_maps: crate::catalog::community_catalog()
+            .is_some_and(|catalog| !catalog.maps.is_empty()),
+        ..CLIENT_CAPABILITIES
+    };
     let join = if let Some(ticket) = &ticket {
         Request::TicketJoin {
             version: PROTOCOL_VERSION,
             ticket: ticket.token().into(),
-            capabilities: CLIENT_CAPABILITIES,
+            capabilities,
         }
     } else {
         Request::Join {
             version: PROTOCOL_VERSION,
             name,
-            capabilities: CLIENT_CAPABILITIES,
+            capabilities,
         }
     };
     socket.queue(encode(&join)?)?;
@@ -1155,6 +1163,7 @@ mod tests {
                     heartbeat_receipts: false,
                     bhop_rooms: false,
                     loadouts: false,
+                    community_maps: false,
                 },
                 ..
             }
@@ -1168,6 +1177,7 @@ mod tests {
                     heartbeat_receipts: false,
                     bhop_rooms: false,
                     loadouts: false,
+                    community_maps: false,
                 },
                 ..
             }
@@ -1175,7 +1185,20 @@ mod tests {
         assert!(matches!(
             decode(br#"{"type":"join","data":{"version":1,"name":"Player","compressed_snapshots":true}}"#).unwrap(),
             Request::Join {
-                capabilities: RoomCapabilities { compressed_snapshots: true, compact_snapshots: false, heartbeat_receipts: false, bhop_rooms: false, loadouts: false },
+                capabilities: RoomCapabilities { compressed_snapshots: true, compact_snapshots: false, heartbeat_receipts: false, bhop_rooms: false, loadouts: false, community_maps: false },
+                ..
+            }
+        ));
+        assert!(matches!(
+            decode(
+                br#"{"type":"join","data":{"version":1,"name":"Player","community_maps":true}}"#
+            )
+            .unwrap(),
+            Request::Join {
+                capabilities: RoomCapabilities {
+                    community_maps: true,
+                    ..
+                },
                 ..
             }
         ));

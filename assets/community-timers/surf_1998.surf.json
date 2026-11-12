@@ -1,0 +1,415 @@
+{
+  "version": 1,
+  "bsp_sha256": "05e9cc88daf4d4a8cc7511715d5d97e924c56d44db6fefda64dada1ece7843a3",
+  "mode": "surf",
+  "timer": "shavit",
+  "tracks": [
+    {
+      "id": 0,
+      "checkpoints_required": true,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    },
+    {
+      "id": 1,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    }
+  ],
+  "zones": [
+    {
+      "kind": "allow_bhop",
+      "track": 0,
+      "points": [
+        [
+          -3201,
+          2303
+        ],
+        [
+          769,
+          2303
+        ],
+        [
+          769,
+          6593
+        ],
+        [
+          -3201,
+          6593
+        ]
+      ],
+      "bottom": -11680,
+      "height": 538,
+      "hook_hammerid": 29202
+    },
+    {
+      "kind": "allow_bhop",
+      "track": 0,
+      "points": [
+        [
+          -13897,
+          9911
+        ],
+        [
+          -11887,
+          9911
+        ],
+        [
+          -11887,
+          12712.966796875
+        ],
+        [
+          -13897,
+          12712.966796875
+        ]
+      ],
+      "bottom": -12946,
+      "height": 996,
+      "hook_hammerid": 29112
+    },
+    {
+      "kind": "allow_bhop",
+      "track": 0,
+      "points": [
+        [
+          -12225,
+          1687
+        ],
+        [
+          -10375.033203125,
+          1687
+        ],
+        [
+          -10375.033203125,
+          4881
+        ],
+        [
+          -12225,
+          4881
+        ]
+      ],
+      "bottom": -4480,
+      "height": 2234,
+      "hook_hammerid": 29055
+    },
+    {
+      "kind": "allow_bhop",
+      "track": 0,
+      "points": [
+        [
+          -9217,
+          -1345
+        ],
+        [
+          -7527,
+          -1345
+        ],
+        [
+          -7527,
+          193
+        ],
+        [
+          -9217,
+          193
+        ]
+      ],
+      "bottom": -768,
+      "height": 386,
+      "hook_hammerid": 28972
+    },
+    {
+      "kind": "allow_bhop",
+      "track": 0,
+      "points": [
+        [
+          -8193,
+          -6337
+        ],
+        [
+          -6231,
+          -6337
+        ],
+        [
+          -6231,
+          -3535
+        ],
+        [
+          -8193,
+          -3535
+        ]
+      ],
+      "bottom": -4608,
+      "height": 1666,
+      "hook_hammerid": 28996
+    },
+    {
+      "kind": "allow_bhop",
+      "track": 1,
+      "points": [
+        [
+          -961,
+          -4833
+        ],
+        [
+          -575,
+          -4833
+        ],
+        [
+          -575,
+          -4447
+        ],
+        [
+          -961,
+          -4447
+        ]
+      ],
+      "bottom": 3296,
+      "height": 386,
+      "hook_hammerid": 29330
+    },
+    {
+      "kind": "allow_bhop",
+      "track": 1,
+      "points": [
+        [
+          -2145,
+          -5793
+        ],
+        [
+          1953,
+          -5793
+        ],
+        [
+          1953,
+          -3935
+        ],
+        [
+          -2145,
+          -3935
+        ]
+      ],
+      "bottom": 2912,
+      "height": 802,
+      "hook_hammerid": 33010
+    },
+    {
+      "kind": "start",
+      "track": 0,
+      "points": [
+        [
+          -9473,
+          -2433
+        ],
+        [
+          -9215,
+          -2433
+        ],
+        [
+          -9215,
+          -2175
+        ],
+        [
+          -9473,
+          -2175
+        ]
+      ],
+      "bottom": 0,
+      "height": 130,
+      "hook_target": "mesa1start",
+      "target": "mesa1"
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "points": [
+        [
+          -5857,
+          -5089
+        ],
+        [
+          -5599,
+          -5089
+        ],
+        [
+          -5599,
+          -4831
+        ],
+        [
+          -5857,
+          -4831
+        ]
+      ],
+      "bottom": -2560,
+      "height": 162,
+      "index": 2,
+      "hook_target": "mesa2start",
+      "target": "mesa2"
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "points": [
+        [
+          -13633,
+          1599
+        ],
+        [
+          -13375,
+          1599
+        ],
+        [
+          -13375,
+          1857
+        ],
+        [
+          -13633,
+          1857
+        ]
+      ],
+      "bottom": -1792,
+      "height": 162,
+      "index": 3,
+      "hook_target": "cubicstart",
+      "target": "cubic"
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "points": [
+        [
+          -13313,
+          13055
+        ],
+        [
+          -13055,
+          13055
+        ],
+        [
+          -13055,
+          13313
+        ],
+        [
+          -13313,
+          13313
+        ]
+      ],
+      "bottom": -11584,
+      "height": 162,
+      "index": 4,
+      "hook_target": "gothicstart",
+      "target": "gothic"
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "points": [
+        [
+          -2945,
+          1983
+        ],
+        [
+          -2687,
+          1983
+        ],
+        [
+          -2687,
+          2241
+        ],
+        [
+          -2945,
+          2241
+        ]
+      ],
+      "bottom": -11136,
+      "height": 162,
+      "index": 5,
+      "hook_target": "alienstart",
+      "target": "alien"
+    },
+    {
+      "kind": "start",
+      "track": 1,
+      "points": [
+        [
+          -3777,
+          -1921
+        ],
+        [
+          -3519,
+          -1921
+        ],
+        [
+          -3519,
+          -1663
+        ],
+        [
+          -3777,
+          -1663
+        ]
+      ],
+      "bottom": 3136,
+      "height": 226,
+      "hook_target": "zeldastart",
+      "target": "zelda"
+    },
+    {
+      "kind": "end",
+      "track": 1,
+      "points": [
+        [
+          1489,
+          -4287
+        ],
+        [
+          1743,
+          -4287
+        ],
+        [
+          1743,
+          -4095
+        ],
+        [
+          1489,
+          -4095
+        ]
+      ],
+      "bottom": 3616,
+      "height": 162,
+      "hook_target": "zeldaend"
+    },
+    {
+      "kind": "end",
+      "track": 0,
+      "points": [
+        [
+          -638,
+          6274
+        ],
+        [
+          -386,
+          6274
+        ],
+        [
+          -386,
+          6526
+        ],
+        [
+          -638,
+          6526
+        ]
+      ],
+      "bottom": -11520,
+      "height": 130
+    }
+  ],
+  "entity_output_fixes": [
+    {
+      "from_key": "OnStartTouch",
+      "to_key": "OnEndTouch",
+      "value": "!activator,AddOutput,Basevelocity 0 0 2048,0,-1"
+    }
+  ]
+}

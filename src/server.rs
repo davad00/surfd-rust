@@ -1,4 +1,4 @@
-use crate::catalog::{self, MapMode};
+use crate::catalog::{self, CatalogEntry, MapMode};
 use crate::loadout::Loadout;
 use crate::network::{
     CONTINUE_MAP, ClientMessage, DEFAULT_ADDRESS, EXTEND_MAP, FramedSocket, MAP_VOTE_CHOICES,
@@ -14,6 +14,7 @@ use std::{
     io,
     net::{IpAddr, SocketAddr, TcpListener},
     path::PathBuf,
+    str::FromStr,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -58,13 +59,54 @@ const MAX_PENDING_PER_SOURCE: usize = 8;
 const MAX_ROTATION_MAPS: usize = 128;
 const MAP_EXTENSION: Duration = Duration::from_secs(15 * 60);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RotationTiers {
+    first: u8,
+    last: u8,
+}
+
+impl FromStr for RotationTiers {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        const INVALID: &str =
+            "Enter a positive tier, tier range, or open tier range (1, 1-2, or 6+).";
+        let parse = |tier: &str| tier.parse::<u8>().map_err(|_| INVALID);
+        let value = value.trim();
+        let (first, last) = if let Some(first) = value.strip_suffix('+') {
+            (parse(first)?, u8::MAX)
+        } else if let Some((first, last)) = value.split_once('-') {
+            (parse(first)?, parse(last)?)
+        } else {
+            let tier = parse(value)?;
+            (tier, tier)
+        };
+        if first == 0 || first > last {
+            return Err(INVALID);
+        }
+        Ok(Self { first, last })
+    }
+}
+
+impl RotationTiers {
+    fn contains(self, entry: &CatalogEntry, mode: MapMode) -> bool {
+        entry.mode == mode
+            && entry
+                .tier
+                .is_some_and(|tier| (self.first..=self.last).contains(&tier))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RoomConfig {
     pub bind: SocketAddr,
     pub name: String,
     pub mode: MapMode,
+    /// Leave empty to start on the first match when using `rotation_tiers`.
     pub map: String,
     pub rotation: Vec<String>,
+    /// Derive the rotation from ranked catalog entries in the room's mode.
+    pub rotation_tiers: Option<RotationTiers>,
     pub capacity: usize,
     pub map_duration: Duration,
     pub vote_duration: Duration,
@@ -84,6 +126,7 @@ impl Default for RoomConfig {
                 .into_iter()
                 .map(str::to_owned)
                 .collect(),
+            rotation_tiers: None,
             capacity: 24,
             map_duration: Duration::from_secs(30 * 60),
             vote_duration: Duration::from_secs(20),
@@ -111,6 +154,23 @@ impl RoomConfig {
         self.name = room_text(&self.name, 48)
             .ok_or_else(|| bad_config("room name must have 1 to 48 printable characters"))?
             .to_owned();
+        if let Some(tiers) = self.rotation_tiers {
+            self.resolve_catalog_rotation(tiers, catalog::entries())?;
+        } else {
+            self.validate_explicit_rotation()?;
+        }
+        if !(1..=MAX_ROOM_PLAYERS).contains(&self.capacity) {
+            return Err(bad_config("room capacity must be between 1 and 64"));
+        }
+        if !(Duration::from_secs(1)..=Duration::from_secs(24 * 3600)).contains(&self.map_duration)
+            || !(Duration::from_secs(1)..=Duration::from_secs(120)).contains(&self.vote_duration)
+        {
+            return Err(bad_config("map or vote duration is out of range"));
+        }
+        Ok(self)
+    }
+
+    fn validate_explicit_rotation(&mut self) -> io::Result<()> {
         if !map_id_valid(&self.map) || self.rotation.iter().any(|map| !map_id_valid(map)) {
             return Err(bad_config("invalid map ID"));
         }
@@ -136,15 +196,49 @@ impl RoomConfig {
         if self.rotation.len() > MAX_ROTATION_MAPS {
             return Err(bad_config("too many maps in the rotation"));
         }
-        if !(1..=MAX_ROOM_PLAYERS).contains(&self.capacity) {
-            return Err(bad_config("room capacity must be between 1 and 64"));
-        }
-        if !(Duration::from_secs(1)..=Duration::from_secs(24 * 3600)).contains(&self.map_duration)
-            || !(Duration::from_secs(1)..=Duration::from_secs(120)).contains(&self.vote_duration)
+        Ok(())
+    }
+
+    fn resolve_catalog_rotation(
+        &mut self,
+        tiers: RotationTiers,
+        entries: &[CatalogEntry],
+    ) -> io::Result<()> {
+        let mut seen = BTreeSet::new();
+        let mut initial = None;
+        self.rotation.clear();
+        for entry in entries
+            .iter()
+            .filter(|entry| tiers.contains(entry, self.mode))
         {
-            return Err(bad_config("map or vote duration is out of range"));
+            if !map_id_valid(&entry.id) {
+                return Err(bad_config("a catalog map has an invalid map ID"));
+            }
+            if seen.insert(entry.id.as_str()) {
+                self.rotation.push(entry.id.clone());
+            }
+            if entry.id.eq_ignore_ascii_case(&self.map) {
+                initial = Some(&entry.id);
+            } else if initial.is_none() && entry.slug.eq_ignore_ascii_case(&self.map) {
+                initial = Some(&entry.id);
+            }
         }
-        Ok(self)
+        let first = self
+            .rotation
+            .first()
+            .ok_or_else(|| bad_config("no ranked catalog maps match the room mode and tiers"))?;
+        if self.map.is_empty() {
+            self.map.clone_from(first);
+        } else {
+            let initial = initial.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("{} is outside the room's catalog rotation", self.map),
+                )
+            })?;
+            self.map.clone_from(initial);
+        }
+        Ok(())
     }
 }
 
@@ -206,6 +300,7 @@ impl RoomControl {
 
 pub struct RoomServer {
     address: SocketAddr,
+    starting_map: String,
     stop: Arc<AtomicBool>,
     control: RoomControl,
     worker: Option<JoinHandle<io::Result<()>>>,
@@ -231,11 +326,13 @@ impl RoomServer {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let (controls, commands) = mpsc::sync_channel(64);
+        let starting_map = config.map.clone();
         let worker = thread::Builder::new()
             .name("surf-room-server".to_owned())
             .spawn(move || Room::new(config, moderation).serve(listener, commands, &worker_stop))?;
         Ok(Self {
             address,
+            starting_map,
             control: RoomControl {
                 commands: controls,
                 stop: Arc::clone(&stop),
@@ -247,6 +344,10 @@ impl RoomServer {
 
     pub fn local_addr(&self) -> SocketAddr {
         self.address
+    }
+
+    pub fn starting_map(&self) -> &str {
+        &self.starting_map
     }
 
     pub fn control(&self) -> RoomControl {
@@ -485,6 +586,7 @@ impl<'a> RoomChatCommand<'a> {
 
 struct Room {
     config: RoomConfig,
+    requires_community_maps: bool,
     map: String,
     previous_map: Option<String>,
     epoch: u64,
@@ -527,8 +629,12 @@ impl serde::Serialize for SnapshotRoster<'_> {
 impl Room {
     fn new(config: RoomConfig, moderation: Moderation) -> Self {
         let now = Instant::now();
+        let requires_community_maps = config.rotation.iter().any(|map| {
+            catalog::find(map).is_some_and(|entry| catalog::is_community_map(&entry.id))
+        });
         Self {
             map: config.map.clone(),
+            requires_community_maps,
             previous_map: None,
             epoch: 1,
             map_deadline: now + config.map_duration,
@@ -980,6 +1086,13 @@ impl Room {
         }
         if self.config.mode == MapMode::Bhop && !self.peers[&id].capabilities.bhop_rooms {
             self.reject(id, "Update your client to join Bhop rooms.");
+            return false;
+        }
+        if self.requires_community_maps && !self.peers[&id].capabilities.community_maps {
+            self.reject(
+                id,
+                "This room uses downloadable maps. Install Surfd Rust v0.1.7 or later and restart the game to load its map catalog.",
+            );
             return false;
         }
         let Some(name) = room_text(name, 24) else {
@@ -1524,6 +1637,24 @@ impl Room {
 
     fn nomination_map(&self, name: &str) -> Option<String> {
         let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+        if let Some(tiers) = self.config.rotation_tiers {
+            let entry = if let Some(entry) =
+                catalog::find(&name).filter(|entry| tiers.contains(entry, self.config.mode))
+            {
+                entry
+            } else {
+                let mut by_title = catalog::entries().iter().filter(|entry| {
+                    tiers.contains(entry, self.config.mode)
+                        && entry.name.eq_ignore_ascii_case(&name)
+                });
+                let entry = by_title.next()?;
+                if by_title.next().is_some() {
+                    return None;
+                }
+                entry
+            };
+            return self.eligible_map(&entry.id).then(|| entry.id.clone());
+        }
         self.config
             .rotation
             .iter()
@@ -1554,17 +1685,20 @@ impl Room {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        let mut maps = nominations.clone();
+        let limit = if self.config.managed.is_some() || self.config.rotation_tiers.is_some() {
+            MAP_VOTE_CHOICES
+        } else {
+            usize::MAX
+        };
+        let mut maps: Vec<_> = nominations.iter().take(limit).cloned().collect();
         maps.extend(
             self.rotation_after_current()
                 .filter(|map| self.eligible_map(map) && !nominations.contains(map))
+                .take(limit.saturating_sub(maps.len()))
                 .cloned(),
         );
-        if self.config.managed.is_none() || maps.is_empty() {
+        if (self.config.managed.is_none() || maps.is_empty()) && maps.len() < limit {
             maps.push(self.map.clone());
-        }
-        if self.config.managed.is_some() {
-            maps.truncate(MAP_VOTE_CHOICES);
         }
         VoteChoices { maps, nominations }
     }
@@ -3091,6 +3225,90 @@ mod tests {
                 .to_string()
                 .contains("ranked map catalog")
         );
+    }
+
+    #[test]
+    fn tier_rotations_use_only_matching_ranked_maps_and_canonical_start_ids() {
+        let surf = RoomConfig {
+            map: "Kitsune".into(),
+            rotation_tiers: Some("1-2".parse().unwrap()),
+            ..RoomConfig::default()
+        }
+        .validated()
+        .unwrap();
+        assert_eq!(surf.map, "surf_kitsune");
+        assert!(surf.rotation.contains(&"surf_boreas".to_owned()));
+        assert!(!surf.rotation.contains(&"downline".to_owned()));
+        assert!(surf.rotation.iter().all(|id| {
+            let entry = catalog::find(id).unwrap();
+            entry.mode == MapMode::Surf && matches!(entry.tier, Some(1..=2))
+        }));
+        let room = Room::new(surf, Moderation::default());
+        assert_eq!(
+            room.nomination_map("BoReAs").as_deref(),
+            Some("surf_boreas")
+        );
+        assert_eq!(room.nomination_map("surf_kitsune"), None);
+        assert_eq!(room.nomination_map("bhop_easy"), None);
+
+        let bhop = RoomConfig {
+            mode: MapMode::Bhop,
+            map: String::new(),
+            rotation_tiers: Some("1+".parse().unwrap()),
+            ..RoomConfig::default()
+        }
+        .validated()
+        .unwrap();
+        assert_eq!(bhop.rotation.first(), Some(&bhop.map));
+        assert!(bhop.rotation.contains(&"bhop_easy".to_owned()));
+        assert!(
+            bhop.rotation
+                .iter()
+                .all(|id| { catalog::find(id).is_some_and(|entry| entry.mode == MapMode::Bhop) })
+        );
+
+        let wrong_tier = RoomConfig {
+            map: "boreas".into(),
+            rotation_tiers: Some("6+".parse().unwrap()),
+            ..RoomConfig::default()
+        };
+        assert!(
+            wrong_tier
+                .validated()
+                .unwrap_err()
+                .to_string()
+                .contains("outside")
+        );
+        for invalid in ["", "0", "0-2", "5-3", "6-", "256+"] {
+            assert!(invalid.parse::<RotationTiers>().is_err());
+        }
+    }
+
+    #[test]
+    fn tier_rotations_reach_late_maps_and_keep_numbered_ballots_bounded() {
+        let template = catalog::find("surf_boreas").unwrap();
+        let entries: Vec<_> = (0..MAX_ROTATION_MAPS + 3)
+            .map(|index| {
+                let mut entry = template.clone();
+                entry.id = format!("surf_fixture_{index}");
+                entry
+            })
+            .collect();
+        let tiers: RotationTiers = "1".parse().unwrap();
+        let mut config = RoomConfig {
+            map: entries[MAX_ROTATION_MAPS].id.clone(),
+            rotation_tiers: Some(tiers),
+            ..RoomConfig::default()
+        };
+        config.resolve_catalog_rotation(tiers, &entries).unwrap();
+        assert_eq!(config.rotation.len(), entries.len());
+        let mut room = Room::new(config, Moderation::default());
+        assert_eq!(room.vote_choices().maps.len(), MAP_VOTE_CHOICES);
+        for index in [MAX_ROTATION_MAPS + 1, MAX_ROTATION_MAPS + 2, 0] {
+            let next = room.next_map();
+            assert_eq!(next, entries[index].id);
+            room.set_map(next, Instant::now(), None);
+        }
     }
 
     #[test]
