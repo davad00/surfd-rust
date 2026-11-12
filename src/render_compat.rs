@@ -29,7 +29,10 @@ pub(super) fn configure(plugins: PluginGroupBuilder) -> PluginGroupBuilder {
     } else {
         plugins
     };
-    let settings = WgpuSettings::default();
+    let settings = WgpuSettings {
+        backends: Some(Backends::from_env().unwrap_or(Backends::DX12)),
+        ..WgpuSettings::default()
+    };
     let uses_fxc = matches!(settings.dx12_shader_compiler, Dx12Compiler::Fxc);
     plugins
         .set(RenderPlugin {

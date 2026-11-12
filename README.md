@@ -4,7 +4,7 @@ An independent Bevy 0.20 desktop surf game with Rust room and records servers. T
 
 ## Windows download
 
-Download `Surfd-Rust-Windows-x64.exe` from [Releases](https://github.com/davad00/surfd-rust/releases) and open it on a Windows x64 PC with a DirectX 12 or Vulkan graphics driver. Downline and Surf School are available offline. Catalog maps download on first use. The game stores settings, local progress and its cache in `%LOCALAPPDATA%\Surfd Rust\maps`.
+Download `Surfd-Rust-Windows-x64.exe` from [Releases](https://github.com/davad00/surfd-rust/releases) and open it on a Windows x64 PC. The default renderer is DirectX 12. Set `WGPU_BACKEND=vulkan` to use Vulkan. Downline and Surf School are available offline. Catalog maps download on first use. The game stores settings, local progress and its cache in `%LOCALAPPDATA%\Surfd Rust\maps`.
 
 ## Build the client from source
 
