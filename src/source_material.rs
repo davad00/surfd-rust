@@ -17,6 +17,7 @@ use crate::course::{CourseTexture, TextureAlpha};
 const MAX_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DECODED_BYTES: usize = 256 * 1024 * 1024;
 const MAX_PATCH_DEPTH: u8 = 8;
+const MAX_SKY_FACE: u32 = 1024;
 
 pub(crate) struct Materials<'a> {
     pak: Option<ZipReader<'a>>,
@@ -203,6 +204,76 @@ impl<'a> Materials<'a> {
         self.textures
     }
 
+    pub fn resolve_sky(&mut self, name: &str) -> Option<[usize; 6]> {
+        if name.is_empty()
+            || name.len() > 128
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            return None;
+        }
+        // World rays are converted from (x, z, -y) and Bevy flips Z for cubemap sampling.
+        // The top and bottom Source textures use rotated UV axes.
+        let mut inputs = Vec::new();
+        for suffix in ["rt", "lf", "up", "dn", "bk", "ft"] {
+            let stem = format!("skybox/{name}{suffix}");
+            let vmt = material_path(&stem, ".vmt")?;
+            let definition = self.definition(&vmt, MAX_PATCH_DEPTH).unwrap_or_default();
+            let path = definition.base.or_else(|| material_path(&stem, ".vtf"))?;
+            let bytes = self.read(&path)?;
+            let texture = vtf::parse(&bytes, &self.limits).ok()?;
+            let largest = texture.width().max(texture.height());
+            let mip = largest.div_ceil(MAX_SKY_FACE).next_power_of_two().ilog2() as u8;
+            let decoded = texture
+                .decode_rgba(0, 0, mip, &self.limits)
+                .or_else(|_| texture.decode_rgba(0, 0, 0, &self.limits))
+                .ok()?;
+            let mut image =
+                image::RgbaImage::from_raw(decoded.width, decoded.height, decoded.rgba)?;
+            if image.width().max(image.height()) > MAX_SKY_FACE {
+                let scale = MAX_SKY_FACE as f32 / image.width().max(image.height()) as f32;
+                image = image::imageops::resize(
+                    &image,
+                    (image.width() as f32 * scale).round().max(1.0) as u32,
+                    (image.height() as f32 * scale).round().max(1.0) as u32,
+                    image::imageops::FilterType::Triangle,
+                );
+            }
+            inputs.push((path, image, definition.transform));
+        }
+        let size = inputs
+            .iter()
+            .map(|(_, image, _)| image.width().max(image.height()))
+            .max()?;
+        let start = self.textures.len();
+        for (face, (path, image, transform)) in inputs.into_iter().enumerate() {
+            let face = image::RgbaImage::from_fn(size, size, |x, y| {
+                let uv = sky_face_uv(
+                    face,
+                    [
+                        (x as f32 + 0.5) / size as f32,
+                        (y as f32 + 0.5) / size as f32,
+                    ],
+                );
+                let [u, v] = transform.apply(uv);
+                let x = ((u * image.width() as f32) as u32).min(image.width() - 1);
+                let y = ((v * image.height() as f32) as u32).min(image.height() - 1);
+                let [r, g, b, _] = image.get_pixel(x, y).0;
+                image::Rgba([r, g, b, 255])
+            });
+            self.textures.push(CourseTexture {
+                name: path,
+                width: size,
+                height: size,
+                rgba: face.into_raw(),
+                bc: None,
+                alpha: TextureAlpha::Opaque,
+            });
+        }
+        Some(std::array::from_fn(|face| start + face))
+    }
+
     fn resolve_material(&mut self, name: &str) -> Option<Resolved> {
         let path = material_path(name, ".vmt")?;
         let definition = self.definition(&path, MAX_PATCH_DEPTH).unwrap_or_default();
@@ -290,6 +361,14 @@ impl<'a> Materials<'a> {
             .iter()
             .find_map(|archive| archive.read(path))
             .map(Cow::Owned)
+    }
+}
+
+fn sky_face_uv(face: usize, [u, v]: [f32; 2]) -> [f32; 2] {
+    match face {
+        2 => [1.0 - v, u],
+        3 => [v, 1.0 - u],
+        _ => [u, v],
     }
 }
 
@@ -432,6 +511,9 @@ fn asset_roots(map_path: Option<&Path>) -> Vec<PathBuf> {
                 ]);
             }
         }
+    }
+    if map_path.is_some() {
+        roots.extend(crate::source_steam::material_roots().iter().cloned());
     }
     let mut unique = Vec::new();
     for root in roots {

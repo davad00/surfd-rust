@@ -587,6 +587,7 @@ impl<'a> RoomChatCommand<'a> {
 struct Room {
     config: RoomConfig,
     requires_community_maps: bool,
+    min_source_rules: u8,
     map: String,
     previous_map: Option<String>,
     epoch: u64,
@@ -632,9 +633,17 @@ impl Room {
         let requires_community_maps = config.rotation.iter().any(|map| {
             catalog::find(map).is_some_and(|entry| catalog::is_community_map(&entry.id))
         });
+        let min_source_rules = config
+            .rotation
+            .iter()
+            .filter_map(|map| catalog::find(map))
+            .map(|entry| entry.min_source_rules)
+            .max()
+            .unwrap_or_default();
         Self {
             map: config.map.clone(),
             requires_community_maps,
+            min_source_rules,
             previous_map: None,
             epoch: 1,
             map_deadline: now + config.map_duration,
@@ -1084,11 +1093,19 @@ impl Room {
             self.reject(id, "This room uses a different client protocol.");
             return false;
         }
-        if self.config.mode == MapMode::Bhop && !self.peers[&id].capabilities.bhop_rooms {
+        let capabilities = self.peers[&id].capabilities;
+        if self.config.mode == MapMode::Bhop && !capabilities.bhop_rooms {
             self.reject(id, "Update your client to join Bhop rooms.");
             return false;
         }
-        if self.requires_community_maps && !self.peers[&id].capabilities.community_maps {
+        if capabilities.source_map_rules < self.min_source_rules {
+            self.reject(
+                id,
+                "This room uses updated Source map physics. Install Surfd Rust v0.1.8 or later to join.",
+            );
+            return false;
+        }
+        if self.requires_community_maps && !capabilities.community_maps {
             self.reject(
                 id,
                 "This room uses downloadable maps. Install Surfd Rust v0.1.7 or later and restart the game to load its map catalog.",
@@ -2293,6 +2310,41 @@ mod tests {
             unreachable!()
         };
         (client, id)
+    }
+
+    #[test]
+    fn room_requires_updated_source_rules_only_when_needed() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let now = Instant::now();
+        let mut room = Room::new(RoomConfig::default(), Moderation::default());
+        for (id, required, supported, accepted) in
+            [(1, 0, 0, true), (2, 1, 0, false), (3, 1, 1, true)]
+        {
+            room.min_source_rules = required;
+            let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (stream, address) = listener.accept().unwrap();
+            let mut peer = Peer::new(FramedSocket::new(stream).unwrap(), address, now);
+            peer.capabilities = RoomCapabilities {
+                community_maps: true,
+                source_map_rules: supported,
+                ..Default::default()
+            };
+            room.peers.insert(id, peer);
+            assert_eq!(
+                room.join(
+                    id,
+                    PROTOCOL_VERSION,
+                    "Player",
+                    None,
+                    Loadout::default(),
+                    now
+                ),
+                accepted,
+            );
+            assert_eq!(room.peers[&id].active_player().is_some(), accepted);
+            room.peers.remove(&id);
+            drop(client);
+        }
     }
 
     #[test]

@@ -5,5 +5,7 @@ These timer sidecars use the authored zones and configurations from [wrldspawn�
 - **Surf 1998**, by grizzlix. The sidecar includes the authored stage spawns and the archive’s trigger fix. [Original release](https://gamebanana.com/mods/545237)
 - **Surf 2pacisalive**, by umg_. [Map and tier credit](https://ksf.surf/maps/surf_2pacisalive)
 - **Surf School**, by sid. The sidecar includes the archive’s autobhop setting for both routes. [Map and tier credit](https://ksf.surf/maps/surf_school_fix)
+- **Calycate**, by ArcticPanda. [Map and tier credit](https://ksf.surf/maps/surf_calycate_ksf)
+- **Satellite**, by biji and iNooVa. The sidecar opts into the original map's gravity triggers. [Map and tier credit](https://ksf.surf/maps/surf_satellite_fix)
 
 The desktop fetches the original BSPs from [FastDL](https://fastdl.me/#questions). These sidecars contain timing data only.

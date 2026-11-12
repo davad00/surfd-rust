@@ -26,6 +26,7 @@ pub mod social_protocol;
 pub mod social_service;
 pub mod source_bsp;
 mod source_material;
+mod source_steam;
 pub mod surfd_map;
 pub mod tutorial;
 pub mod visual_opacity;

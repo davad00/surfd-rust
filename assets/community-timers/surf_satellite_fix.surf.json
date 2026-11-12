@@ -1,0 +1,145 @@
+{
+  "version": 1,
+  "bsp_sha256": "60894fc520a7d1d701b37440c4b159600e7ef0a1314bb9833dbe51317c181307",
+  "mode": "surf",
+  "timer": "shavit",
+  "tier": 1,
+  "tracks": [
+    {
+      "id": 0,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    }
+  ],
+  "zones": [
+    {
+      "kind": "start",
+      "track": 0,
+      "points": [
+        [
+          -14977,
+          -1089
+        ],
+        [
+          -13951,
+          -1089
+        ],
+        [
+          -13951,
+          1089
+        ],
+        [
+          -14977,
+          1089
+        ]
+      ],
+      "bottom": 4544,
+      "height": 642,
+      "hook_target": "map_start"
+    },
+    {
+      "kind": "end",
+      "track": 0,
+      "points": [
+        [
+          10623,
+          -1345
+        ],
+        [
+          12609,
+          -1345
+        ],
+        [
+          12609,
+          1345
+        ],
+        [
+          10623,
+          1345
+        ]
+      ],
+      "bottom": -5632,
+      "height": 642,
+      "hook_target": "map_end"
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "points": [
+        [
+          1216,
+          4160
+        ],
+        [
+          1728,
+          4160
+        ],
+        [
+          1728,
+          7000
+        ],
+        [
+          1216,
+          7000
+        ]
+      ],
+      "bottom": 1983.96337890625,
+      "height": 1584.03662109375,
+      "index": 1
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "points": [
+        [
+          1216,
+          -7080
+        ],
+        [
+          1720,
+          -7080
+        ],
+        [
+          1720,
+          -4160
+        ],
+        [
+          1216,
+          -4160
+        ]
+      ],
+      "bottom": 1991.2060546875,
+      "height": 1656.7939453125,
+      "index": 1
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "points": [
+        [
+          768,
+          -1920
+        ],
+        [
+          1152,
+          -1920
+        ],
+        [
+          1152,
+          1920
+        ],
+        [
+          768,
+          1920
+        ]
+      ],
+      "bottom": -3263.705810546875,
+      "height": 1087.705810546875,
+      "index": 2
+    }
+  ],
+  "entity_output_fixes": [],
+  "source_gravity_outputs": true
+}

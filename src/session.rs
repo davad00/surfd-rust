@@ -1957,6 +1957,45 @@ mod tests {
     use super::*;
     use crate::course::Zone;
 
+    #[test]
+    fn negative_gravity_touch_lifts_a_player_until_the_delayed_reset() {
+        let origin = Vec3::new(0.0, 100.0, 0.0);
+        let mut course = course(vec![Zone {
+            brush: Brush::box_at(origin - Vec3::splat(48.0), origin + Vec3::splat(48.0)),
+            kind: ZoneKind::PlayerOutput(Box::new(crate::course::PlayerOutputZone {
+                index: 0,
+                filter: None,
+                filter_multi: None,
+                on_start: vec![
+                    PlayerOutput {
+                        delay_ticks: 0,
+                        value: PlayerOutputValue::Gravity(-1.0),
+                    },
+                    PlayerOutput {
+                        delay_ticks: 3,
+                        value: PlayerOutputValue::Gravity(1.0),
+                    },
+                ],
+                on_end: Vec::new(),
+                on_touch: Vec::new(),
+            })),
+        }]);
+        course.spawn = origin;
+        let mut session = Session::new(&course);
+        let neutral = MoveInput::default();
+        session.tick(&course, neutral);
+        assert_eq!(session.triggers.gravity_scale, Some(-1.0));
+        let before = session.player.velocity.y;
+        session.tick(&course, neutral);
+        session.tick(&course, neutral);
+        assert!(session.player.velocity.y > before);
+        assert_eq!(session.triggers.gravity_scale, Some(-1.0));
+        session.tick(&course, neutral);
+        assert_eq!(session.triggers.gravity_scale, None);
+        let before = session.player.velocity.y;
+        session.tick(&course, neutral);
+        assert!(session.player.velocity.y < before);
+    }
     fn zone(min_x: f32, max_x: f32, kind: ZoneKind) -> Zone {
         Zone {
             brush: Brush::box_at(

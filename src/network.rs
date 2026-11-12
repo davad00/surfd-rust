@@ -236,7 +236,7 @@ pub enum ServerEvent {
 }
 
 // Additive Join fields. Old servers ignore them and new servers default them
-// to false for old clients.
+// to false or zero for old clients.
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
 pub(crate) struct RoomCapabilities {
     #[serde(default, skip_serializing_if = "is_false")]
@@ -251,6 +251,8 @@ pub(crate) struct RoomCapabilities {
     pub loadouts: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub community_maps: bool,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub source_map_rules: u8,
 }
 
 const CLIENT_CAPABILITIES: RoomCapabilities = RoomCapabilities {
@@ -260,6 +262,7 @@ const CLIENT_CAPABILITIES: RoomCapabilities = RoomCapabilities {
     bhop_rooms: true,
     loadouts: true,
     community_maps: false,
+    source_map_rules: crate::catalog::SOURCE_MAP_RULES,
 };
 
 #[derive(Serialize, Deserialize)]
@@ -295,6 +298,10 @@ pub(crate) enum Request {
 
 fn is_false(value: &bool) -> bool {
     !value
+}
+
+fn is_zero(value: &u8) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1164,6 +1171,7 @@ mod tests {
                     bhop_rooms: false,
                     loadouts: false,
                     community_maps: false,
+                    source_map_rules: 0,
                 },
                 ..
             }
@@ -1178,6 +1186,7 @@ mod tests {
                     bhop_rooms: false,
                     loadouts: false,
                     community_maps: false,
+                    source_map_rules: 0,
                 },
                 ..
             }
@@ -1185,7 +1194,7 @@ mod tests {
         assert!(matches!(
             decode(br#"{"type":"join","data":{"version":1,"name":"Player","compressed_snapshots":true}}"#).unwrap(),
             Request::Join {
-                capabilities: RoomCapabilities { compressed_snapshots: true, compact_snapshots: false, heartbeat_receipts: false, bhop_rooms: false, loadouts: false, community_maps: false },
+                capabilities: RoomCapabilities { compressed_snapshots: true, compact_snapshots: false, heartbeat_receipts: false, bhop_rooms: false, loadouts: false, community_maps: false, source_map_rules: 0 },
                 ..
             }
         ));
@@ -1197,6 +1206,21 @@ mod tests {
             Request::Join {
                 capabilities: RoomCapabilities {
                     community_maps: true,
+                    source_map_rules: 0,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(matches!(
+            decode(
+                br#"{"type":"join","data":{"version":1,"name":"Player","community_maps":true,"source_map_rules":1}}"#
+            )
+            .unwrap(),
+            Request::Join {
+                capabilities: RoomCapabilities {
+                    community_maps: true,
+                    source_map_rules: 1,
                     ..
                 },
                 ..
@@ -1228,6 +1252,7 @@ mod tests {
                 Request::Join {
                     capabilities: RoomCapabilities {
                         heartbeat_receipts: true,
+                        source_map_rules: crate::catalog::SOURCE_MAP_RULES,
                         ..
                     },
                     ..

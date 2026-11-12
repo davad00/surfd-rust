@@ -15,6 +15,7 @@ use crate::course::{
     BonusRoute, Brush, Course, Plane, PlayerOutput, PlayerOutputValue, PlayerOutputZone,
     PracticeSpawn, Zone, ZoneKind,
 };
+use crate::movement::TICK_HZ;
 
 const MAX_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -82,6 +83,8 @@ pub(super) struct Sidecar {
     zones: Vec<Region>,
     #[serde(default)]
     entity_output_fixes: Vec<OutputFix>,
+    #[serde(default)]
+    source_gravity_outputs: bool,
     #[serde(skip)]
     revision: [u8; 32],
 }
@@ -278,9 +281,10 @@ impl Sidecar {
             return Err("Imported timer data has no main track".into());
         }
 
-        add_base_velocity_outputs(
+        add_player_outputs(
             &mut course.zones,
             &self.entity_output_fixes,
+            self.source_gravity_outputs,
             geometry,
             entities,
         )?;
@@ -729,33 +733,39 @@ mod polygon_tests {
     }
 }
 
-fn add_base_velocity_outputs(
+fn add_player_outputs(
     zones: &mut Vec<Zone>,
     fixes: &[OutputFix],
+    gravity_outputs: bool,
     geometry: &Geometry,
     entities: &[Entity<'_>],
 ) -> Result<(), String> {
-    let supported_key = |key: &str| {
-        key.eq_ignore_ascii_case("OnStartTouch") || key.eq_ignore_ascii_case("OnEndTouch")
-    };
     if fixes
         .iter()
-        .any(|fix| !supported_key(&fix.from_key) || !supported_key(&fix.to_key))
+        .any(|fix| touch_event(&fix.from_key).is_none() || touch_event(&fix.to_key).is_none())
     {
         return Err("Imported output fixes must use supported touch events".into());
     }
     let mut matched = BTreeSet::new();
     for (index, entity) in entities.iter().enumerate() {
-        if entity.get("classname") != Some("trigger_multiple")
-            || entity.get("startdisabled") == Some("1")
-            || entity
-                .get("filtername")
-                .is_some_and(|name| !name.is_empty())
-        {
-            continue;
-        }
-        let Some(model) = entity.model_index().filter(|&index| index != 0) else {
-            continue;
+        let model = entity.model_index().filter(|&index| index != 0);
+        let gravity_brush = gravity_outputs && entity.get("classname") == Some("trigger_gravity");
+        let touch_trigger = entity.get("classname") == Some("trigger_multiple");
+        let model = model.filter(|_| {
+            (touch_trigger || gravity_brush)
+                && entity.get("startdisabled") != Some("1")
+                && entity.get("filtername").is_none_or(str::is_empty)
+        });
+        let static_client = gravity_outputs && static_client_trigger(entity);
+        let brush_gravity = if gravity_brush {
+            if model.is_none() || !static_client {
+                return Err(
+                    "Imported gravity brush needs an enabled, unfiltered client trigger".into(),
+                );
+            }
+            Some(parse_gravity(entity.get("gravity").unwrap_or("0"))?)
+        } else {
+            None
         };
         let mut output = PlayerOutputZone {
             index,
@@ -763,37 +773,59 @@ fn add_base_velocity_outputs(
             filter_multi: None,
             on_start: Vec::new(),
             on_end: Vec::new(),
-            on_touch: Vec::new(),
+            on_touch: brush_gravity
+                .map(|gravity| PlayerOutput {
+                    delay_ticks: 0,
+                    value: PlayerOutputValue::Gravity(gravity),
+                })
+                .into_iter()
+                .collect(),
         };
         for &(mut key, value) in &entity.outputs {
-            let Some(velocity) = value
-                .strip_prefix("!activator,AddOutput,Basevelocity ")
-                .and_then(|value| value.strip_suffix(",0,-1"))
-                .and_then(parse_vector)
-            else {
+            let Some(action) = parse_player_output(value, gravity_outputs)? else {
                 continue;
             };
-            if let Some((index, fix)) = fixes
-                .iter()
-                .enumerate()
-                .find(|(_, fix)| fix.from_key.eq_ignore_ascii_case(key) && fix.value == value)
+            let gravity = matches!(action.value, PlayerOutputValue::Gravity(_));
+            if let Some(brush_gravity) = brush_gravity {
+                if gravity
+                    && !(touch_event(key) == Some(true)
+                        && action.delay_ticks == 0
+                        && matches!(action.value, PlayerOutputValue::Gravity(value) if value == brush_gravity))
+                {
+                    return Err("Imported gravity brush has a conflicting gravity output".into());
+                }
+                continue;
+            }
+            if model.is_none() || (gravity && !static_client) {
+                if gravity {
+                    return Err(
+                        "Imported gravity output needs an enabled, unfiltered client trigger"
+                            .into(),
+                    );
+                }
+                continue;
+            }
+            if !gravity
+                && let Some((index, fix)) = fixes
+                    .iter()
+                    .enumerate()
+                    .find(|(_, fix)| fix.from_key.eq_ignore_ascii_case(key) && fix.value == value)
             {
                 matched.insert(index);
                 key = &fix.to_key;
             }
-            let actions = if key.eq_ignore_ascii_case("OnStartTouch") {
-                &mut output.on_start
-            } else if key.eq_ignore_ascii_case("OnEndTouch") {
-                &mut output.on_end
-            } else {
-                continue;
-            };
-            actions.push(PlayerOutput {
-                delay_ticks: 0,
-                value: PlayerOutputValue::BaseVelocity(source_axes(velocity)),
-            });
+            match touch_event(key) {
+                Some(true) => output.on_start.push(action),
+                Some(false) => output.on_end.push(action),
+                None if gravity => return Err("Imported gravity must use a touch event".into()),
+                None => {}
+            }
         }
-        if !output.on_start.is_empty() || !output.on_end.is_empty() {
+        if let Some(model) = model
+            && (!output.on_start.is_empty()
+                || !output.on_end.is_empty()
+                || !output.on_touch.is_empty())
+        {
             let model = lookup(&geometry.models, model, "output model")?;
             zones.extend(
                 geometry
@@ -810,4 +842,130 @@ fn add_base_velocity_outputs(
         return Err("An imported Stripper output fix did not match a supported BSP output".into());
     }
     Ok(())
+}
+
+fn touch_event(name: &str) -> Option<bool> {
+    if name.eq_ignore_ascii_case("OnStartTouch") {
+        Some(true)
+    } else if name.eq_ignore_ascii_case("OnEndTouch") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn static_client_trigger(entity: &Entity<'_>) -> bool {
+    // This subset only models an ordinary player touching a static brush.
+    const CLIENTS: u32 = 1;
+    const DISALLOW_BOTS: u32 = 4096;
+    entity.get("parentname").is_none_or(str::is_empty)
+        && entity
+            .get("spawnflags")
+            .and_then(|flags| flags.parse::<u32>().ok())
+            .is_some_and(|flags| flags & !DISALLOW_BOTS == CLIENTS)
+}
+
+fn parse_player_output(value: &str, gravity_outputs: bool) -> Result<Option<PlayerOutput>, String> {
+    let delimiter = if value.contains('\x1b') { '\x1b' } else { ',' };
+    let mut parts = value.split(delimiter);
+    let target = parts.next().unwrap_or_default().trim_ascii();
+    let input = parts.next().unwrap_or_default();
+    if !input.eq_ignore_ascii_case("AddOutput") {
+        return Ok(None);
+    }
+    let Some((key, parameter)) = parts.next().and_then(|part| part.split_once(' ')) else {
+        return Ok(None);
+    };
+    let delay = parts.next().unwrap_or_default();
+    let count = parts.next().unwrap_or_default();
+    let extra = parts.next().is_some();
+    if key.eq_ignore_ascii_case("basevelocity") {
+        if target.eq_ignore_ascii_case("!activator") && delay == "0" && count == "-1" && !extra {
+            return Ok(parse_vector(parameter).map(|velocity| PlayerOutput {
+                delay_ticks: 0,
+                value: PlayerOutputValue::BaseVelocity(source_axes(velocity)),
+            }));
+        }
+        return Ok(None);
+    }
+    if !gravity_outputs || !key.eq_ignore_ascii_case("gravity") {
+        return Ok(None);
+    }
+    if !target.eq_ignore_ascii_case("!activator") || count != "-1" || extra {
+        return Err("Imported gravity must target the activating player and be repeatable".into());
+    }
+    let gravity = parse_gravity(parameter)?;
+    let seconds = delay
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .ok_or("Invalid imported gravity delay")?;
+    let ticks = (seconds * TICK_HZ - 1e-6).ceil();
+    if ticks > f64::from(u32::MAX) {
+        return Err("Imported gravity delay exceeds the tick range".into());
+    }
+    Ok(Some(PlayerOutput {
+        delay_ticks: ticks as u32,
+        value: PlayerOutputValue::Gravity(gravity),
+    }))
+}
+
+fn parse_gravity(raw: &str) -> Result<f32, String> {
+    raw.trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| "Invalid imported gravity scale".into())
+}
+
+#[cfg(test)]
+mod player_output_tests {
+    use super::*;
+
+    #[test]
+    fn source_boosters_accept_case_insensitive_base_velocity_keys() {
+        for action in [
+            "!activator,AddOutput,Basevelocity 2 3 400,0,-1",
+            "!activator,AddOutput,basevelocity 2 3 400,0,-1",
+            "!ACTIVATOR,addoutput,BASEVELOCITY 2 3 400,0,-1",
+            "!activator\x1bAddOutput\x1bbasevelocity 2 3 400\x1b0\x1b-1",
+        ] {
+            let output = parse_player_output(action, false).unwrap().unwrap();
+            assert_eq!(output.delay_ticks, 0);
+            assert!(matches!(
+                output.value,
+                PlayerOutputValue::BaseVelocity(value) if value == Vec3::new(2.0, 400.0, -3.0)
+            ));
+        }
+        for action in [
+            "!activator,AddOutput,basevelocity 0 0 400,0.2,-1",
+            "other,AddOutput,basevelocity 0 0 400,0,-1",
+            "!activator,AddOutput,basevelocity 0 0 400,0,1",
+        ] {
+            assert!(parse_player_output(action, false).unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn source_gravity_outputs_are_opt_in_and_delays_use_fixed_ticks() {
+        let lift = "!activator ,AddOutput,gravity -0.6,0,-1";
+        assert!(parse_player_output(lift, false).unwrap().is_none());
+        let output = parse_player_output(lift, true).unwrap().unwrap();
+        assert_eq!(output.delay_ticks, 0);
+        assert!(matches!(output.value, PlayerOutputValue::Gravity(-0.6)));
+
+        let reset = parse_player_output("!activator,AddOutput,gravity 1,0.5,-1", true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(reset.delay_ticks, 34);
+        assert!(matches!(reset.value, PlayerOutputValue::Gravity(1.0)));
+        for action in [
+            "!activator,AddOutput,gravity -1,0,1",
+            "!activator,AddOutput,gravity -1,-0.1,-1",
+            "!activator,AddOutput,gravity NaN,0,-1",
+            "other,AddOutput,gravity -1,0,-1",
+        ] {
+            assert!(parse_player_output(action, true).is_err());
+        }
+    }
 }

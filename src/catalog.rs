@@ -99,8 +99,16 @@ pub struct CatalogEntry {
     pub bonus_pack: Option<String>,
     pub bonuses: usize,
     pub source_bsp: Option<SourceBspEntry>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub min_source_rules: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download: Option<SourceDownload>,
+}
+
+pub const SOURCE_MAP_RULES: u8 = 1;
+
+fn is_zero(value: &u8) -> bool {
+    *value == 0
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -231,6 +239,7 @@ pub fn configure_community(data: &[u8]) -> Result<(), String> {
             || entry.author.is_empty()
             || entry.author.len() > 200
             || !entry.tier.is_some_and(|tier| tier > 0)
+            || entry.min_source_rules > SOURCE_MAP_RULES
             || entry.layout
                 != if download.stages > 1 {
                     "staged"

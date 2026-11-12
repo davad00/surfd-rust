@@ -504,10 +504,25 @@ impl Service {
         let parts: Vec<_> = route.trim_start_matches('/').split('/').collect();
         match (method, parts.as_slice()) {
             (Method::Get, ["v1", "status"]) => encode(&serde_json::json!({"version": 1})),
-            (Method::Get, ["v1", "map-catalog"]) => match catalog::community_catalog() {
-                Some(catalog) => encode(catalog),
-                None => encode(&serde_json::json!({"version": 1, "maps": []})),
-            },
+            (Method::Get, ["v1", "map-catalog"]) => {
+                #[derive(Serialize)]
+                struct CompatibleCatalog<'a> {
+                    version: u8,
+                    maps: Vec<&'a catalog::CatalogEntry>,
+                }
+                let rules = request
+                    .headers()
+                    .iter()
+                    .find(|header| header.field.equiv("X-Surfd-Map-Rules"))
+                    .and_then(|header| header.value.as_str().parse::<u8>().ok())
+                    .unwrap_or(0);
+                let maps = catalog::community_catalog()
+                    .into_iter()
+                    .flat_map(|catalog| &catalog.maps)
+                    .filter(|entry| entry.min_source_rules <= rules)
+                    .collect();
+                encode(&CompatibleCatalog { version: 1, maps })
+            }
             (Method::Get, ["v1", "ready"]) => {
                 let db = self.db.lock().map_err(internal)?;
                 db.query_row(

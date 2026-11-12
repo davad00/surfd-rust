@@ -29,7 +29,14 @@ pub fn community_catalog() -> Result<Vec<u8>, String> {
         "/v1/map-catalog",
         Duration::from_secs(3),
     )?;
-    let mut response = agent.get(url).call().map_err(|error| error.to_string())?;
+    let mut response = agent
+        .get(url)
+        .header(
+            "X-Surfd-Map-Rules",
+            bevy_surf::catalog::SOURCE_MAP_RULES.to_string(),
+        )
+        .call()
+        .map_err(|error| error.to_string())?;
     if response.status() != 200 {
         return Err(format!("Map catalog returned HTTP {}", response.status()));
     }

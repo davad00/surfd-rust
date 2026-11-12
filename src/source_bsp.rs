@@ -349,6 +349,15 @@ fn parse(
         .map(|brush| brush.min.y)
         .fold(spawn.y, f32::min)
         - 2048.0;
+    let sky = load_visuals
+        .then(|| {
+            entities
+                .iter()
+                .find(|entity| entity.get("classname") == Some("worldspawn"))?
+                .get("skyname")
+                .and_then(|name| materials.resolve_sky(name))
+        })
+        .flatten();
     let mut textures = materials.into_textures();
     lightmaps.append(&mut textures, &mut surfaces);
     let mut course = Course {
@@ -360,7 +369,7 @@ fn parse(
         textures,
         visual_meshes: Vec::new(),
         visual_visibility: None,
-        sky: None,
+        sky,
         sky_occluders: Vec::new(),
         fog: None,
         zones,
