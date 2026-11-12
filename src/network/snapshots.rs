@@ -28,9 +28,16 @@ impl SnapshotEncoder {
         epoch: u64,
         count: usize,
         players: impl Iterator<Item = &'a PlayerInfo>,
+        include_loadouts: bool,
     ) -> io::Result<Arc<[u8]>> {
         self.compact_payload.clear();
-        compact_snapshot::encode(&mut self.compact_payload, epoch, count, players)?;
+        compact_snapshot::encode(
+            &mut self.compact_payload,
+            epoch,
+            count,
+            players,
+            include_loadouts,
+        )?;
         if let Some(frame) = compress(
             &mut self.compressor,
             &mut self.frame,
@@ -143,6 +150,7 @@ mod tests {
                         points: 0,
                         rank: Default::default(),
                     }),
+                    loadout: Default::default(),
                 }
             })
             .collect();
@@ -159,7 +167,7 @@ mod tests {
             &plain[4..]
         );
         let compact = SnapshotEncoder::default()
-            .encode_compact(1, players.len(), players.iter())
+            .encode_compact(1, players.len(), players.iter(), false)
             .unwrap();
         assert!(compact.len() < compressed.len() * 4 / 5);
         let header = u32::from_be_bytes(compact[..4].try_into().unwrap());

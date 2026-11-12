@@ -15,14 +15,15 @@ struct Item {
     equip: Action,
 }
 
-pub(super) fn render(parent: &mut ChildSpawnerCommands, settings: &Settings) {
+pub(super) fn render(parent: &mut ChildSpawnerCommands, settings: &Settings, online: &Online) {
+    let loadout = online.equipped_loadout(settings);
     section(
         parent,
         "Player skins",
         AvatarSkin::ALL.map(|skin| Item {
             name: skin.label(),
             preview: Preview::Avatar(skin.swatch()),
-            equipped: settings.avatar_skin == skin,
+            equipped: loadout.avatar_skin == skin,
             equip: Action::EquipAvatar(skin),
         }),
     );
@@ -32,19 +33,18 @@ pub(super) fn render(parent: &mut ChildSpawnerCommands, settings: &Settings) {
         KnifeFinish::ALL.map(|finish| Item {
             name: finish.label(),
             preview: Preview::Knife(finish.palette()),
-            equipped: settings.knife_finish == finish,
+            equipped: loadout.knife_finish == finish,
             equip: Action::EquipKnife(finish),
         }),
     );
     let camera = settings.primary_binding(ControlAction::ToggleCamera);
     let hint = if camera == "—" {
-        "Skins appear in third person and the knife appears in first person. Choices save on this device.".into()
+        "Skins appear in third person and the knife appears in first person.".into()
     } else {
-        format!(
-            "{camera} switches between your player skin and first-person knife. Choices save on this device."
-        )
+        format!("{camera} switches between your player skin and first-person knife.")
     };
     parent.spawn(text(hint, 12., MUTED));
+    parent.spawn(text(online.cosmetic_status(), 12., MUTED));
 }
 
 fn section(parent: &mut ChildSpawnerCommands, title: &str, items: [Item; 3]) {

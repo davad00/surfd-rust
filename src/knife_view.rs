@@ -111,10 +111,11 @@ pub(super) fn update(
     }
 
     let (mut transform, mut mesh) = knife.into_inner();
+    let selected_finish = online.equipped_loadout(&menu.settings).knife_finish;
     if let Some((_, selected)) = meshes
         .0
         .iter()
-        .find(|(finish, _)| *finish == menu.settings.knife_finish)
+        .find(|(finish, _)| *finish == selected_finish)
         && mesh.0 != *selected
     {
         mesh.0 = selected.clone();
@@ -129,6 +130,49 @@ pub(super) fn update(
 }
 
 fn knife_mesh(finish: KnifeFinish) -> Mesh {
+    let mut model = knife_model(finish);
+    let wrist = Vec3::new(0.046, -0.137, -0.013);
+    let cuff = Vec3::new(0.074, -0.178, -0.018);
+    model.taper(
+        wrist,
+        cuff,
+        Vec2::new(0.050, 0.038),
+        Vec2::new(0.054, 0.041),
+        [43, 52, 61],
+    );
+    model.taper(
+        cuff,
+        Vec3::new(0.227, -0.422, 0.016),
+        Vec2::new(0.054, 0.041),
+        Vec2::new(0.085, 0.065),
+        [68, 79, 88],
+    );
+    model.ellipsoid(
+        Vec3::new(0.036, -0.091, 0.025),
+        Vec3::new(0.057, 0.067, 0.041),
+        [40, 46, 52],
+    );
+    for finger in 0..4 {
+        let offset = finger as f32;
+        model.ellipsoid(
+            Vec3::new(0.005 + offset * 0.006, -0.045 - offset * 0.026, 0.045),
+            Vec3::new(0.057 - offset * 0.003, 0.014, 0.029),
+            [52, 60, 68],
+        );
+    }
+    model.ellipsoid(
+        Vec3::new(0.058, -0.035, 0.034),
+        Vec3::new(0.022, 0.035, 0.026),
+        [48, 55, 63],
+    );
+    model.finish()
+}
+
+pub(crate) fn world_knife_mesh(finish: KnifeFinish) -> Mesh {
+    knife_model(finish).finish()
+}
+
+fn knife_model(finish: KnifeFinish) -> Model {
     let palette = finish.palette();
     let mut model = Model::default();
     let profile = [
@@ -143,6 +187,10 @@ fn knife_mesh(finish: KnifeFinish) -> Mesh {
     ];
     let inset = Vec2::new(-0.006, 0.147);
     for face in [1.0, -1.0] {
+        let mut profile = profile;
+        if face < 0.0 {
+            profile.reverse();
+        }
         let outer = profile.map(|point| point.extend(0.0));
         let inner = profile.map(|point| point.lerp(inset, 0.19).extend(face * 0.011));
         for index in 0..outer.len() {
@@ -195,41 +243,7 @@ fn knife_mesh(finish: KnifeFinish) -> Mesh {
         palette.grip,
     );
 
-    let wrist = Vec3::new(0.046, -0.137, -0.013);
-    let cuff = Vec3::new(0.074, -0.178, -0.018);
-    model.taper(
-        wrist,
-        cuff,
-        Vec2::new(0.050, 0.038),
-        Vec2::new(0.054, 0.041),
-        [43, 52, 61],
-    );
-    model.taper(
-        cuff,
-        Vec3::new(0.227, -0.422, 0.016),
-        Vec2::new(0.054, 0.041),
-        Vec2::new(0.085, 0.065),
-        [68, 79, 88],
-    );
-    model.ellipsoid(
-        Vec3::new(0.036, -0.091, 0.025),
-        Vec3::new(0.057, 0.067, 0.041),
-        [40, 46, 52],
-    );
-    for finger in 0..4 {
-        let offset = finger as f32;
-        model.ellipsoid(
-            Vec3::new(0.005 + offset * 0.006, -0.045 - offset * 0.026, 0.045),
-            Vec3::new(0.057 - offset * 0.003, 0.014, 0.029),
-            [52, 60, 68],
-        );
-    }
-    model.ellipsoid(
-        Vec3::new(0.058, -0.035, 0.034),
-        Vec3::new(0.022, 0.035, 0.026),
-        [48, 55, 63],
-    );
-    model.finish()
+    model
 }
 
 #[derive(Default)]

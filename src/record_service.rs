@@ -17,6 +17,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use crate::{
     catalog::{self, MapMode},
     course::Course,
+    loadout::Loadout,
     network::{
         RoomJoinTicket, RoomTicketKey, normalize_address, room_address_authority,
         room_address_is_loopback, room_address_uses_tls, ticket_time,
@@ -63,6 +64,10 @@ const SCHEMA: &str = "
         token BLOB PRIMARY KEY,
         account INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
         expires INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS account_loadouts (
+        account INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+        loadout TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS oauth_identities (
         provider TEXT NOT NULL CHECK (provider IN ('google', 'x')),
@@ -598,6 +603,14 @@ impl Service {
                 let account = account(&db, bearer.as_deref())?;
                 encode(&profile(&db, account)?)
             }
+            (Method::Get, ["v1", "loadout"]) => {
+                let db = self.db.lock().map_err(internal)?;
+                let id = account(&db, bearer.as_deref())?;
+                encode(&account_loadout(&db, id)?)
+            }
+            (Method::Post, ["v1", "loadout"]) => {
+                encode(&self.set_loadout(bearer.as_deref(), read(request, 4096)?)?)
+            }
             (Method::Post, ["v1", "profile"]) => {
                 let changes: ProfileUpdate = read(request, 4096)?;
                 encode(&self.update_profile(bearer.as_deref(), changes)?)
@@ -814,7 +827,7 @@ impl Service {
                     "This room ID and address are not registered with the records service.",
                 )
             })?;
-        let identity = if let Some(token) = bearer {
+        let (identity, loadout) = if let Some(token) = bearer {
             let db = self.db.lock().map_err(internal)?;
             let id = account(&db, Some(token))?;
             let name: String =
@@ -822,18 +835,34 @@ impl Service {
                     row.get(0)
                 })?;
             let points = account_progression(&db, id, entry.mode)?.points;
-            Some((
-                id,
-                name,
-                self.room_directory.moderators.contains(&id),
-                points,
-            ))
+            let loadout = account_loadout(&db, id)?.unwrap_or_default();
+            (
+                Some((
+                    id,
+                    name,
+                    self.room_directory.moderators.contains(&id),
+                    points,
+                )),
+                loadout,
+            )
         } else {
-            None
+            (None, Loadout::default())
         };
         signer
-            .issue_for_mode(entry.mode, identity, ticket_time())
+            .issue_for_mode_with_loadout(entry.mode, identity, ticket_time(), loadout)
             .map_err(internal)
+    }
+
+    fn set_loadout(&self, bearer: Option<&str>, loadout: Loadout) -> Result<Loadout> {
+        let db = self.db.lock().map_err(internal)?;
+        let id = account(&db, bearer)?;
+        db.execute(
+            "INSERT INTO account_loadouts(account,loadout) VALUES (?1,?2)
+             ON CONFLICT(account) DO UPDATE SET loadout=excluded.loadout
+             WHERE account_loadouts.loadout<>excluded.loadout",
+            params![id, serde_json::to_string(&loadout).map_err(internal)?],
+        )?;
+        Ok(loadout)
     }
 
     fn login(&self, credentials: Credentials) -> Result<SignedIn> {
@@ -1933,6 +1962,19 @@ fn account(db: &Connection, bearer: Option<&str>) -> Result<i64> {
     .ok_or_else(unauthorized)
 }
 
+fn account_loadout(db: &Connection, id: i64) -> Result<Option<Loadout>> {
+    let stored: Option<String> = db
+        .query_row(
+            "SELECT loadout FROM account_loadouts WHERE account=?1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    stored
+        .map(|json| serde_json::from_str(&json).map_err(internal))
+        .transpose()
+}
+
 fn profile(db: &Connection, id: i64) -> Result<Profile> {
     let (name, motto, title, banner, showcase, revision) = db.query_row(
         "SELECT name,motto,title,coalesce(banner,''),coalesce(showcase,'[]'),coalesce(revision,0)
@@ -2198,6 +2240,100 @@ mod tests {
     }
 
     #[test]
+    fn loadout_sync_requires_an_account_and_preserves_existing_database_data() {
+        let service = service();
+        let [first, second, other] = {
+            let db = service.db.lock().unwrap();
+            db.execute_batch(
+                "DROP TABLE IF EXISTS account_loadouts;
+                 INSERT INTO accounts(id,name,password) VALUES (1,'Surfer',''), (2,'Other','');",
+            )
+            .unwrap();
+            let tokens = [1, 1, 2].map(|id| create_session(&db, id).unwrap().token);
+            db.execute_batch(SCHEMA).unwrap();
+            tokens
+        };
+        let http = Server::http("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/v1/loadout", http.server_addr());
+        let (ranked, _queue) = mpsc::sync_channel(1);
+        let timeout = Duration::from_secs(15);
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(timeout))
+            .http_status_as_error(false)
+            .build()
+            .new_agent();
+        let get = |token: Option<&str>| {
+            let mut request = agent.get(endpoint.as_str()).header("Connection", "close");
+            if let Some(token) = token {
+                request = request.header("Authorization", format!("Bearer {token}"));
+            }
+            request.call().unwrap()
+        };
+        let post = |token: Option<&str>, body: &str| {
+            let mut request = agent
+                .post(endpoint.as_str())
+                .header("Connection", "close")
+                .header("Content-Type", "application/json");
+            if let Some(token) = token {
+                request = request.header("Authorization", format!("Bearer {token}"));
+            }
+            request.send(body).unwrap()
+        };
+        let selected = serde_json::json!({"avatar_skin": "ember", "knife_finish": "glacier"});
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for _ in 0..10 {
+                    let Some(request) = http.recv_timeout(timeout).unwrap() else {
+                        break;
+                    };
+                    service.accept_http(request, &ranked);
+                }
+            });
+            assert_eq!(get(None).status(), 401);
+            assert_eq!(post(None, &selected.to_string()).status(), 401);
+            assert_eq!(
+                get(Some(&first)).body_mut().read_to_string().unwrap(),
+                "null"
+            );
+            let mut saved = post(Some(&first), &selected.to_string());
+            assert_eq!(saved.status(), 200);
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(
+                    &saved.body_mut().read_to_string().unwrap()
+                )
+                .unwrap(),
+                selected
+            );
+            assert_eq!(post(Some(&first), r#"{"avatar_skin":42}"#).status(), 400);
+            service.db.lock().unwrap().execute_batch(SCHEMA).unwrap();
+            let mut other_device = get(Some(&second));
+            assert_eq!(other_device.status(), 200);
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(
+                    &other_device.body_mut().read_to_string().unwrap()
+                )
+                .unwrap(),
+                selected
+            );
+            let changed = serde_json::json!({"avatar_skin": "classic", "knife_finish": "ember"});
+            assert_eq!(post(Some(&second), &changed.to_string()).status(), 200);
+            let mut original_device = get(Some(&first));
+            assert_eq!(
+                serde_json::from_reader::<_, serde_json::Value>(
+                    original_device.body_mut().as_reader()
+                )
+                .unwrap(),
+                changed
+            );
+            assert_eq!(
+                get(Some(&other)).body_mut().read_to_string().unwrap(),
+                "null"
+            );
+            assert_eq!(get(Some("revoked-or-invalid")).status(), 401);
+        });
+    }
+
+    #[test]
     fn private_message_reports_require_recipient_and_moderator() {
         let mut service = service();
         service.room_directory.moderators.insert(3);
@@ -2420,8 +2556,26 @@ mod tests {
             .unwrap();
             create_session(&db, 17).unwrap().token
         };
-        assert!(service.issue_room_ticket(None, request()).is_ok());
-        assert!(service.issue_room_ticket(Some(&auth), request()).is_ok());
+        let claims = |auth: Option<&str>| {
+            let ticket = service.issue_room_ticket(auth, request()).unwrap();
+            let serialized = serde_json::to_value(ticket).unwrap();
+            let token = serialized["ticket"].as_str().unwrap();
+            service.room_directory.rooms[0]
+                .1
+                .verify(token, ticket_time())
+                .unwrap()
+        };
+        assert!(claims(None).loadout.is_default());
+        assert!(claims(Some(&auth)).loadout.is_default());
+        let selected = Loadout {
+            avatar_skin: crate::loadout::AvatarSkin::Ember,
+            knife_finish: crate::loadout::KnifeFinish::Glacier,
+        };
+        service.set_loadout(Some(&auth), selected).unwrap();
+        let renewed = claims(Some(&auth));
+        assert_eq!(renewed.identity.account_id, Some(17));
+        assert_eq!(renewed.loadout, selected);
+        assert!(claims(None).loadout.is_default());
         assert_eq!(
             service
                 .issue_room_ticket(Some("bad"), request())

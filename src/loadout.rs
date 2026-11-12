@@ -1,6 +1,19 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default)]
+pub struct Loadout {
+    pub avatar_skin: AvatarSkin,
+    pub knife_finish: KnifeFinish,
+}
+
+impl Loadout {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", from = "String")]
 pub enum AvatarSkin {
     #[default]

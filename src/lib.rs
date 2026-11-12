@@ -3,6 +3,7 @@ mod brush_index;
 pub mod catalog;
 pub mod course;
 pub mod goldsrc_bsp;
+pub mod loadout;
 pub mod local_map;
 pub mod look;
 pub mod movement;

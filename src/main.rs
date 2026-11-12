@@ -2,7 +2,7 @@
 mod ambient;
 mod bench;
 mod bench_render_trace;
-mod cosmetics;
+pub(crate) use bevy_surf::loadout as cosmetics;
 mod flythrough;
 mod library;
 mod menu;

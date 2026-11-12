@@ -1,4 +1,5 @@
 use crate::catalog::{self, MapMode};
+use crate::loadout::Loadout;
 use crate::network::{
     CONTINUE_MAP, ClientMessage, DEFAULT_ADDRESS, EXTEND_MAP, FramedSocket, MAP_VOTE_CHOICES,
     PROTOCOL_VERSION, PlayerInfo, PlayerState, Request, Response, RoomCapabilities,
@@ -811,7 +812,7 @@ impl Room {
                     self.reject(id, "This room requires a ticket from the records service.");
                 } else {
                     self.peers.get_mut(&id).unwrap().capabilities = capabilities;
-                    self.join(id, version, &name, None, now);
+                    self.join(id, version, &name, None, Loadout::default(), now);
                 }
             }
             Request::TicketJoin {
@@ -947,6 +948,7 @@ impl Room {
                 .expect("refresh requires an active player");
             player.identity = Some(claims.identity);
             player.name = claims.name;
+            player.loadout = claims.loadout;
             peer.identity_until = Some(now + ROOM_IDENTITY_LEASE);
             self.redeemed_tickets.insert(claims.nonce, claims.expires);
             return;
@@ -956,6 +958,7 @@ impl Room {
             PROTOCOL_VERSION,
             &claims.name,
             Some(claims.identity),
+            claims.loadout,
             now,
         ) {
             self.redeemed_tickets.insert(claims.nonce, claims.expires);
@@ -968,6 +971,7 @@ impl Room {
         version: u16,
         name: &str,
         identity: Option<RoomIdentity>,
+        loadout: Loadout,
         now: Instant,
     ) -> bool {
         if version != PROTOCOL_VERSION {
@@ -1028,6 +1032,7 @@ impl Room {
             state: None,
             spectating: None,
             identity,
+            loadout,
         });
         self.send_event(
             id,
@@ -1988,29 +1993,47 @@ impl Room {
     }
 
     fn publish_snapshot(&mut self) {
-        let active = self
-            .peers
-            .values()
-            .filter(|peer| peer.active_player().is_some());
-        let (mut count, mut compact_count) = (0, 0);
+        let active = self.peers.values().filter_map(|peer| {
+            peer.active_player()
+                .map(|player| (peer.capabilities, player))
+        });
+        let (mut count, mut compact_count, mut loadout_compact_count) = (0, 0, 0);
         let mut compress_legacy = false;
-        for peer in active.clone() {
+        let mut has_custom_loadout = false;
+        for (capabilities, player) in active.clone() {
             count += 1;
-            compact_count += usize::from(peer.capabilities.compact_snapshots);
-            compress_legacy |=
-                !peer.capabilities.compact_snapshots && peer.capabilities.compressed_snapshots;
+            compact_count += usize::from(capabilities.compact_snapshots);
+            loadout_compact_count +=
+                usize::from(capabilities.compact_snapshots && capabilities.loadouts);
+            has_custom_loadout |= !player.loadout.is_default();
+            compress_legacy |= !capabilities.compact_snapshots && capabilities.compressed_snapshots;
         }
         if count == 0 {
             return;
         }
-        let compact = if compact_count != 0 {
+        if !has_custom_loadout {
+            loadout_compact_count = 0;
+        }
+        let legacy_compact_count = compact_count - loadout_compact_count;
+        let mut encode_compact = |include_loadouts| {
             self.snapshot_encoder
-                .encode_compact(self.epoch, count, active.filter_map(Peer::active_player))
+                .encode_compact(
+                    self.epoch,
+                    count,
+                    active.clone().map(|(_, player)| player),
+                    include_loadouts,
+                )
                 .ok()
-        } else {
-            None
         };
-        let plain = if compact_count < count || compact.is_none() {
+        let compact = (legacy_compact_count != 0)
+            .then(|| encode_compact(false))
+            .flatten();
+        let compact_with_loadouts = (loadout_compact_count != 0)
+            .then(|| encode_compact(true))
+            .flatten();
+        let compact_fallback = (legacy_compact_count != 0 && compact.is_none())
+            || (loadout_compact_count != 0 && compact_with_loadouts.is_none());
+        let plain = if compact_count < count || compact_fallback {
             encode(&SnapshotResponse::Event {
                 epoch: self.epoch,
                 event: SnapshotEvent::Players(SnapshotRoster(&self.peers)),
@@ -2021,16 +2044,19 @@ impl Room {
         };
         let compressed = plain
             .as_ref()
-            .filter(|_| compress_legacy || (compact_count != 0 && compact.is_none()))
+            .filter(|_| compress_legacy || compact_fallback)
             .and_then(|frame| self.snapshot_encoder.encode(frame));
         for peer in self
             .peers
             .values_mut()
             .filter(|peer| peer.active_player().is_some())
         {
-            let compact_frame = compact
-                .as_ref()
-                .filter(|_| peer.capabilities.compact_snapshots);
+            let compact_frame = if has_custom_loadout && peer.capabilities.loadouts {
+                compact_with_loadouts.as_ref()
+            } else {
+                compact.as_ref()
+            }
+            .filter(|_| peer.capabilities.compact_snapshots);
             let compressed_frame = compressed
                 .as_ref()
                 .filter(|_| peer.capabilities.compressed_snapshots);
@@ -2136,6 +2162,79 @@ mod tests {
     }
 
     #[test]
+    fn mixed_compact_clients_receive_compatible_loadout_rosters() {
+        use crate::loadout::{AvatarSkin, KnifeFinish};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let now = Instant::now();
+        let mut room = Room::new(RoomConfig::default(), Moderation::default());
+        let equipped = Loadout {
+            avatar_skin: AvatarSkin::Glacier,
+            knife_finish: KnifeFinish::Ember,
+        };
+        let clients: Vec<_> = [(1, false), (2, true)]
+            .into_iter()
+            .map(|(id, loadouts)| {
+                let stream = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+                let (socket, address) = listener.accept().unwrap();
+                let mut peer = Peer::new(FramedSocket::new(socket).unwrap(), address, now);
+                peer.capabilities = RoomCapabilities {
+                    compact_snapshots: true,
+                    loadouts,
+                    ..Default::default()
+                };
+                room.peers.insert(id, peer);
+                let identity = RoomIdentity {
+                    account_id: Some(id as i64),
+                    moderator: false,
+                    points: 0,
+                    rank: Default::default(),
+                };
+                assert!(room.join(
+                    id,
+                    PROTOCOL_VERSION,
+                    "Surfer",
+                    Some(identity),
+                    equipped,
+                    now
+                ));
+                let mut client = FramedSocket::new(stream).unwrap();
+                client.accept_compact_snapshots();
+                (id, loadouts, client)
+            })
+            .collect();
+        room.publish_snapshot();
+        for (id, loadouts, mut client) in clients {
+            let expected = if loadouts {
+                equipped
+            } else {
+                Loadout::default()
+            };
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                room.peers.get_mut(&id).unwrap().flush(Instant::now());
+                let messages = client.receive::<Response>().unwrap().messages;
+                if let Some(players) = messages.into_iter().find_map(|message| match message {
+                    Response::Event {
+                        event: ServerEvent::Players(players),
+                        ..
+                    } => Some(players),
+                    _ => None,
+                }) {
+                    assert_eq!(players.len(), 2);
+                    assert!(players.iter().all(|player| player.loadout == expected));
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for compact roster"
+                );
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    #[test]
     fn borrowed_roster_preserves_the_snapshot_frame() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let now = Instant::now();
@@ -2150,6 +2249,7 @@ mod tests {
                 state: None,
                 spectating: None,
                 identity: None,
+                loadout: Loadout::default(),
             });
             if id == 8 {
                 peer.close(now);
@@ -2190,6 +2290,7 @@ mod tests {
             state: None,
             spectating: None,
             identity: None,
+            loadout: Loadout::default(),
         });
 
         let mut scan = Vec::new();
@@ -2403,7 +2504,7 @@ mod tests {
                 id,
                 Peer::new(FramedSocket::new(stream).unwrap(), address, now),
             );
-            assert!(room.join(id, PROTOCOL_VERSION, name, None, now));
+            assert!(room.join(id, PROTOCOL_VERSION, name, None, Loadout::default(), now));
         }
         let queued = encode(&Response::Event {
             epoch: 1,
@@ -2456,7 +2557,7 @@ mod tests {
             1,
             Peer::new(FramedSocket::new(stream).unwrap(), address, now),
         );
-        assert!(room.join(1, PROTOCOL_VERSION, "Alice", None, now));
+        assert!(room.join(1, PROTOCOL_VERSION, "Alice", None, Loadout::default(), now));
         room.advance_vote(now);
         assert_eq!(room.map_deadline, now + room.config.map_duration);
         assert!(!room.vote_info(now).open);
@@ -2487,7 +2588,7 @@ mod tests {
             1,
             Peer::new(FramedSocket::new(stream).unwrap(), address, now),
         );
-        assert!(room.join(1, PROTOCOL_VERSION, "Alice", None, now));
+        assert!(room.join(1, PROTOCOL_VERSION, "Alice", None, Loadout::default(), now));
         let expiry = room.map_deadline;
         let opening = expiry - room.config.vote_duration;
         let millisecond = Duration::from_millis(1);
@@ -2540,7 +2641,14 @@ mod tests {
                 points: 0,
                 rank: Default::default(),
             };
-            assert!(room.join(id, PROTOCOL_VERSION, name, Some(identity), now));
+            assert!(room.join(
+                id,
+                PROTOCOL_VERSION,
+                name,
+                Some(identity),
+                Loadout::default(),
+                now
+            ));
         }
         let expiry = room.map_deadline;
         let opening = expiry - room.config.vote_duration;
@@ -2682,6 +2790,8 @@ mod tests {
 
     #[test]
     fn managed_room_checks_tickets_and_enforces_guest_and_moderator_permissions() {
+        use crate::loadout::{AvatarSkin, KnifeFinish};
+
         let key = RoomTicketKey::from_hex("managed", &"0123456789abcdef".repeat(4)).unwrap();
         let server = RoomServer::bind(RoomConfig {
             bind: "127.0.0.1:0".parse().unwrap(),
@@ -2716,10 +2826,19 @@ mod tests {
             |event| matches!(event, ServerEvent::Error(message) if message.contains("already used")),
         );
 
+        let equipped = Loadout {
+            avatar_skin: AvatarSkin::Glacier,
+            knife_finish: KnifeFinish::Ember,
+        };
         let alice = Client::connect_with_ticket(
             &address,
-            key.issue(Some((7, "Alice".into(), false, 1000)), ticket_time())
-                .unwrap(),
+            key.issue_for_mode_with_loadout(
+                MapMode::Surf,
+                Some((7, "Alice".into(), false, 1000)),
+                ticket_time(),
+                equipped,
+            )
+            .unwrap(),
         )
         .unwrap();
         let ServerEvent::Welcome { id: alice_id, .. } =
@@ -2729,7 +2848,7 @@ mod tests {
         };
         wait_for(&guest, |event| {
             matches!(event, ServerEvent::Players(players) if
-            players.iter().any(|player| player.id == alice_id && player.name == "Alice"
+            players.iter().any(|player| player.id == alice_id && player.name == "Alice" && player.loadout == equipped
                 && player.identity.is_some_and(|identity| identity.account_id == Some(7) && !identity.moderator && identity.points == 1000)))
         });
 
@@ -2826,7 +2945,8 @@ mod tests {
             .unwrap();
         wait_for(&guest, |event| {
             matches!(event, ServerEvent::Players(players) if
-            players.iter().any(|player| player.id == alice_id && player.identity.is_some_and(|identity| identity.points == 1500)))
+            players.iter().any(|player| player.id == alice_id && player.loadout.is_default()
+                && player.identity.is_some_and(|identity| identity.points == 1500)))
         });
         moderator
             .send(ClientMessage::Moderate {

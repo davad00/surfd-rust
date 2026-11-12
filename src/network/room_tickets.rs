@@ -3,7 +3,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::{catalog::MapMode, record_protocol::ProgressionRank};
+use crate::{catalog::MapMode, loadout::Loadout, record_protocol::ProgressionRank};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -75,6 +75,8 @@ pub(crate) struct TicketClaims {
     pub nonce: [u8; 16],
     pub name: String,
     pub identity: RoomIdentity,
+    #[serde(default, skip_serializing_if = "Loadout::is_default")]
+    pub loadout: Loadout,
     issued: i64,
     pub expires: i64,
 }
@@ -126,12 +128,23 @@ impl RoomTicketKey {
         self.issue_for_mode(MapMode::Surf, account, now)
     }
 
-    #[cfg(any(feature = "records-service", test))]
+    #[cfg(test)]
     pub(crate) fn issue_for_mode(
         &self,
         mode: MapMode,
         account: Option<(i64, String, bool, u32)>,
         now: i64,
+    ) -> Result<RoomJoinTicket, String> {
+        self.issue_for_mode_with_loadout(mode, account, now, Loadout::default())
+    }
+
+    #[cfg(any(feature = "records-service", test))]
+    pub(crate) fn issue_for_mode_with_loadout(
+        &self,
+        mode: MapMode,
+        account: Option<(i64, String, bool, u32)>,
+        now: i64,
+        loadout: Loadout,
     ) -> Result<RoomJoinTicket, String> {
         let mut nonce = [0; 16];
         getrandom::fill(&mut nonce).map_err(|error| error.to_string())?;
@@ -163,6 +176,11 @@ impl RoomTicketKey {
             nonce,
             name,
             identity,
+            loadout: if identity.account_id.is_some() {
+                loadout
+            } else {
+                Loadout::default()
+            },
             issued: now,
             expires: now + TTL_SECONDS,
         };
@@ -193,7 +211,9 @@ impl RoomTicketKey {
             || claims.expires.checked_sub(claims.issued)? != TTL_SECONDS
             || claims.identity.account_id.is_some_and(|id| id <= 0)
             || (claims.identity.account_id.is_none()
-                && (claims.identity.moderator || claims.identity.points != 0))
+                && (claims.identity.moderator
+                    || claims.identity.points != 0
+                    || !claims.loadout.is_default()))
             || claims.identity.rank != ProgressionRank::from_points(claims.identity.points)
         {
             return None;

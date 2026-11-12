@@ -16,7 +16,9 @@ cargo run --release --locked
 
 Open a player profile and select **Runs** to browse their verified personal bests by place or date. **Watch** and **Race** load a compatible replay and its map.
 
-Open **Store** from the main menu or choose **Customize skins and knife** in your profile. Equip Classic, Glacier, or Ember for your avatar and knife. The knife appears in first person. Press **V** with the default bindings to see your avatar in third person. Choices are free and saved on this device.
+Open **Store** from the main menu or choose **Customize skins and knife** in your profile. Equip Classic, Glacier, or Ember for your avatar and knife. The knife appears in first person. Press **V** with the default bindings to see your avatar and knife in third person. Every choice is free. Signed-in players share their equipped cosmetics with other players in managed rooms and can use the same loadout on another PC. Guest choices are saved on this device.
+
+Windows remembers your sign-in in Credential Manager for the life of the records session, which expires after seven days. Sign out to remove the saved session on this PC.
 
 Press **Esc** while playing to see the current map or bonus leaderboard on the right. Use the play icon to watch a run, the ghost icon to race a main-course run, or **Full leaderboard** to see the rest of that board.
 

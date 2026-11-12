@@ -16,6 +16,7 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use bevy_surf::{
     catalog::MapMode,
+    loadout::Loadout,
     network::{
         self, Client, ClientMessage, PlayerInfo, PlayerState, RoomIdentity, RoomInfo,
         RoomJoinTicket, RoomModeration, RoomReportPage, ServerEvent, VoteInfo,
@@ -43,12 +44,16 @@ use crate::{
     view::Game,
 };
 
+mod account_loadout;
+pub(crate) use account_loadout::Equip;
+use account_loadout::{AccountLoadout, Request as LoadoutRequest};
 mod pause_board;
 use pause_board::{PauseBoard, ReplayKind as PauseReplayKind};
 mod ranked_attempt;
 use ranked_attempt::{AttemptProgress, RankedAttempt};
 mod ranked_journal;
 use ranked_journal::{PendingRankedSave, RECENT_RANKED_SAVES, RankedJournal};
+mod saved_session;
 mod web_history;
 use crate::surfd_history::{SourcePlayer, SurfdHistory, fetch_history, fetch_run_splits};
 pub use web_history::RunSplits;
@@ -190,7 +195,11 @@ enum Reply {
     Connected(u64, Result<Client, String>),
     RoomRefresh(u64, Result<RoomJoinTicket, api::RetryableRequestFailure>),
     SignedIn(Result<SignedIn, String>),
+    RestoredSession(String, Result<Profile, api::RequestFailure>),
+    LoadoutRead(Result<Option<Loadout>, api::RequestFailure>),
+    LoadoutSaved(Result<Loadout, api::RequestFailure>),
     ProviderSignedIn(Arc<AtomicBool>, Result<SignedIn, String>),
+    LogoutRevoked(Result<bool, String>),
     SignedOut(bool, Result<bool, String>),
     Profile(Result<Profile, String>),
     SurfdHistory(Result<SurfdHistory, String>),
@@ -320,19 +329,26 @@ const ROOM_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
 struct RoomRefreshSchedule {
     next: Option<Instant>,
     pending: bool,
+    expedite_next: bool,
     failures: u8,
 }
 
 impl RoomRefreshSchedule {
     fn renewed(&mut self, now: Instant) {
         *self = Self {
-            next: Some(now + ROOM_REFRESH_INTERVAL),
+            next: Some(if self.expedite_next {
+                now
+            } else {
+                now + ROOM_REFRESH_INTERVAL
+            }),
             ..Self::default()
         };
     }
 
     fn expedite(&mut self, now: Instant) {
-        if !self.pending && self.failures == 0 && self.next.is_some() {
+        if self.pending || (self.failures == 0 && self.next.is_none()) {
+            self.expedite_next = true;
+        } else if self.failures == 0 && self.next.is_some() {
             self.next = Some(now);
         }
     }
@@ -343,6 +359,7 @@ impl RoomRefreshSchedule {
 
     fn failed(&mut self, now: Instant, retry_after: Option<Duration>) {
         self.pending = false;
+        self.expedite_next = false;
         self.next = retry_after.and_then(|delay| {
             self.failures = (self.failures + 1).min(5);
             let backoff = Duration::from_secs((1 << self.failures).min(20));
@@ -430,6 +447,10 @@ pub struct Online {
     direct_message: String,
     report_reason: String,
     token: Option<String>,
+    desktop_account: bool,
+    restoring_session: bool,
+    startup_room: Option<String>,
+    account_loadout: AccountLoadout,
     account_generation: u64,
     records_origin: String,
     actions: Vec<Action>,
@@ -540,6 +561,10 @@ impl Default for Online {
             banner: String::new(),
             showcase: String::new(),
             token: None,
+            desktop_account: false,
+            restoring_session: false,
+            startup_room: None,
+            account_loadout: AccountLoadout::default(),
             actions: Vec::new(),
             friend_name: String::new(),
             direct_message: String::new(),
@@ -1015,6 +1040,103 @@ impl Online {
         None
     }
 
+    pub fn start_desktop_account(&mut self, startup_room: Option<String>) {
+        self.desktop_account = true;
+        self.startup_room = startup_room;
+        match saved_session::read(&self.records_origin) {
+            Ok(Some(token)) => {
+                self.account_busy = true;
+                self.restoring_session = true;
+                self.record_status = "Restoring sign-in…".into();
+                let origin = self.records_origin.clone();
+                self.background(move || {
+                    let result = api::restore_profile(&origin, &token);
+                    Reply::RestoredSession(token, result)
+                });
+            }
+            Ok(None) => self.join_startup_room(),
+            Err(_) => {
+                self.record_status = "Could not read your saved sign-in.".into();
+                self.join_startup_room();
+            }
+        }
+    }
+
+    fn join_startup_room(&mut self) {
+        if let Some(address) = self.startup_room.take()
+            && !self.joining
+            && self.client.is_none()
+        {
+            self.queue(Action::JoinAddress(address));
+        }
+    }
+
+    fn forget_saved_session(&self, token: &str) -> bool {
+        !self.desktop_account || saved_session::clear(&self.records_origin, token).is_ok()
+    }
+
+    pub fn equipped_loadout(&self, settings: &Settings) -> Loadout {
+        let local = Loadout {
+            avatar_skin: settings.avatar_skin,
+            knife_finish: settings.knife_finish,
+        };
+        self.account_loadout.effective(local)
+    }
+
+    pub fn cosmetic_status(&self) -> &'static str {
+        if self.restoring_session {
+            "Restoring sign-in…"
+        } else if self.is_signed_in() {
+            self.account_loadout.status()
+        } else {
+            "Sign in to save cosmetics to your account."
+        }
+    }
+
+    fn poll_account_loadout(&mut self) {
+        if !self.desktop_account || self.account_busy {
+            return;
+        }
+        let Some(token) = self.token.as_ref() else {
+            return;
+        };
+        let Some(request) = self.account_loadout.next_request(Instant::now()) else {
+            return;
+        };
+        let token = token.clone();
+        let origin = self.records_origin.clone();
+        self.background(move || match request {
+            LoadoutRequest::Read => Reply::LoadoutRead(api::read_loadout(&origin, &token)),
+            LoadoutRequest::Save(loadout) => {
+                Reply::LoadoutSaved(api::save_loadout(&origin, &token, loadout))
+            }
+        });
+    }
+
+    fn loadout_failed(&mut self, error: api::RequestFailure, menu: &mut MenuState) {
+        match error.status {
+            Some(401) if self.account_busy => {
+                self.account_loadout
+                    .failed(Instant::now(), Some(Duration::ZERO));
+            }
+            Some(401) => {
+                if let Some(token) = &self.token {
+                    self.forget_saved_session(token);
+                }
+                self.reset_account();
+                self.refresh_room_identity();
+                self.record_status = "Your session expired. Sign in again.".into();
+            }
+            Some(404) => {
+                let loadout = self.account_loadout.use_local(menu.local_loadout());
+                menu.set_local_loadout(loadout);
+            }
+            _ => self
+                .account_loadout
+                .failed(Instant::now(), error.retry_after),
+        }
+    }
+
     fn reset_account(&mut self) {
         self.account_generation = self.account_generation.wrapping_add(1);
         self.close_profile_runs();
@@ -1023,6 +1145,8 @@ impl Online {
         }
         self.token = None;
         self.profile = None;
+        self.restoring_session = false;
+        self.account_loadout = AccountLoadout::default();
         self.web_history = WebHistory::default();
         self.viewed_profile = None;
         self.playtime = None;
@@ -1063,6 +1187,7 @@ impl Online {
             return;
         }
         self.records_origin = origin.to_owned();
+        self.startup_room = None;
         self.discovery_generation = self.discovery_generation.wrapping_add(1);
         self.discovering = false;
         self.next_discovery = None;
@@ -2260,8 +2385,21 @@ pub fn update(
     }
     for request in requests.read() {
         match request {
+            MenuRequest::Equip(equip) => {
+                if online.restoring_session {
+                    continue;
+                }
+                if !online.is_signed_in() || !online.account_loadout.equip(*equip) {
+                    let mut local = menu.local_loadout();
+                    equip.apply(&mut local);
+                    menu.set_local_loadout(local);
+                }
+                menu.refresh();
+            }
             MenuRequest::QuickPlay => {
-                if online.is_connected() {
+                if online.restoring_session {
+                    menu.set_status("Restoring sign-in…".into());
+                } else if online.is_connected() {
                     menu.go(Page::Playing);
                 } else if matches!(online.quick_play, QuickPlay::Idle) {
                     online.leave();
@@ -2625,6 +2763,32 @@ pub fn update(
             Reply::SignedIn(result) => {
                 complete_sign_in(&mut online, result);
             }
+            Reply::RestoredSession(token, result) => {
+                online.account_busy = false;
+                online.restoring_session = false;
+                match result {
+                    Ok(profile) => activate_sign_in(&mut online, SignedIn { token, profile }),
+                    Err(error) if error.status == Some(401) => {
+                        online.forget_saved_session(&token);
+                        online.record_status = "Your session expired. Sign in again.".into();
+                    }
+                    Err(_) => {
+                        online.record_status = "Could not restore your saved sign-in.".into();
+                    }
+                }
+                online.join_startup_room();
+            }
+            Reply::LoadoutRead(result) => match result {
+                Ok(loadout) => online.account_loadout.loaded(loadout, menu.local_loadout()),
+                Err(error) => online.loadout_failed(error, &mut menu),
+            },
+            Reply::LoadoutSaved(result) => match result {
+                Ok(loadout) => {
+                    online.account_loadout.saved(loadout);
+                    online.room_refresh.expedite(Instant::now());
+                }
+                Err(error) => online.loadout_failed(error, &mut menu),
+            },
             Reply::ProviderSignedIn(flow, result) => {
                 if online
                     .provider_sign_in
@@ -2633,6 +2797,12 @@ pub fn update(
                 {
                     online.provider_sign_in = None;
                     complete_sign_in(&mut online, result);
+                }
+            }
+            Reply::LogoutRevoked(result) => {
+                if result.is_err() && online.record_status == "Signed out" {
+                    online.record_status =
+                        "Signed out on this PC. The server could not be reached.".into();
                 }
             }
             Reply::SignedOut(deleted, result) => {
@@ -2648,11 +2818,18 @@ pub fn update(
                         } else {
                             Ok(())
                         };
+                        let forgotten = online
+                            .token
+                            .as_deref()
+                            .is_none_or(|token| online.forget_saved_session(token));
                         online.reset_account();
                         online.field = None;
                         online.record_status = match (deleted, cleanup) {
                             (_, Err(error)) => format!("Account deleted. {error}"),
                             (true, Ok(())) => "Account deleted".into(),
+                            (false, Ok(())) if !forgotten => {
+                                "Signed out. Could not remove the saved sign-in.".into()
+                            }
                             (false, Ok(())) => "Signed out".into(),
                         };
                         online.refresh_room_identity();
@@ -3006,6 +3183,7 @@ pub fn update(
         }
     }
     online.poll_profile_replay(&mut game, &mut menu);
+    online.poll_account_loadout();
     online.update_ranked_saves(&mut menu);
     online.ensure_attempt(&game, menu.page);
     if game.signed_at_finish && online.can_submit(&game) {
@@ -3047,6 +3225,9 @@ fn perform(
     match action {
         Action::Edit(field) => online.field = (online.field != Some(field)).then_some(field),
         Action::Discover => online.discover(true),
+        Action::Join | Action::JoinAddress(_) if online.restoring_session => {
+            online.status = "Restoring sign-in…".into();
+        }
         Action::Join => {
             online.connect(online.address.clone());
         }
@@ -3180,20 +3361,29 @@ fn perform(
                 online.record_status = "Sign-in canceled".into();
             }
         }
-        Action::SignOut | Action::DeleteAccount if !online.account_busy => {
+        Action::SignOut if !online.account_busy => {
+            if let Some(token) = online.token.clone() {
+                let forgotten = online.forget_saved_session(&token);
+                let endpoint = online.endpoint.clone();
+                online.reset_account();
+                online.refresh_room_identity();
+                online.record_status = if forgotten {
+                    "Signed out"
+                } else {
+                    "Signed out. Could not remove the saved sign-in."
+                }
+                .into();
+                online.background(move || {
+                    Reply::LogoutRevoked(api::post(&endpoint, "/v1/logout", Some(&token), &()))
+                });
+            }
+        }
+        Action::DeleteAccount if !online.account_busy => {
             if let Some(token) = online.token.clone() {
                 online.account_busy = true;
                 let endpoint = online.endpoint.clone();
-                let delete = matches!(action, Action::DeleteAccount);
                 online.background(move || {
-                    Reply::SignedOut(
-                        delete,
-                        if delete {
-                            api::delete(&endpoint, "/v1/profile", &token)
-                        } else {
-                            api::post(&endpoint, "/v1/logout", Some(&token), &())
-                        },
-                    )
+                    Reply::SignedOut(true, api::delete(&endpoint, "/v1/profile", &token))
                 });
             }
         }
@@ -3810,15 +4000,24 @@ fn complete_sign_in(online: &mut Online, result: Result<SignedIn, String>) {
     online.account_busy = false;
     match result {
         Ok(signed_in) => {
-            online.reset_account();
-            online.token = Some(signed_in.token);
-            set_profile(online, signed_in.profile);
-            online.field = None;
-            online.record_status = "Signed in".into();
-            online.refresh_room_identity();
+            let remembered = !online.desktop_account
+                || saved_session::write(&online.records_origin, &signed_in.token).is_ok();
+            activate_sign_in(online, signed_in);
+            if !remembered {
+                online.record_status = "Signed in. Could not remember this sign-in.".into();
+            }
         }
         Err(error) => online.record_status = error,
     }
+}
+
+fn activate_sign_in(online: &mut Online, signed_in: SignedIn) {
+    online.reset_account();
+    online.token = Some(signed_in.token);
+    set_profile(online, signed_in.profile);
+    online.field = None;
+    online.record_status = "Signed in".into();
+    online.refresh_room_identity();
 }
 
 fn set_profile(online: &mut Online, profile: Profile) {
@@ -4386,6 +4585,67 @@ mod tests {
             .unwrap()
             .recv_timeout(Duration::from_secs(2))
             .unwrap()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn startup_validates_a_remembered_session_with_its_records_service() {
+        use std::{
+            io::{BufRead, BufReader, Write},
+            net::TcpListener,
+        };
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let session = signed_in(23);
+        let profile = serde_json::to_vec(&session.profile).unwrap();
+        let authorization = format!("authorization: bearer {}", session.token).to_ascii_lowercase();
+        let service = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut headers = BufReader::new(&mut stream).lines();
+            assert!(
+                headers
+                    .next()
+                    .unwrap()
+                    .unwrap()
+                    .starts_with("GET /v1/profile ")
+            );
+            assert!(
+                headers
+                    .map_while(Result::ok)
+                    .take_while(|line| !line.is_empty())
+                    .any(|line| line.to_ascii_lowercase() == authorization)
+            );
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                profile.len()
+            )
+            .unwrap();
+            stream.write_all(&profile).unwrap();
+        });
+
+        saved_session::write(&origin, &session.token).unwrap();
+        let mut online = Online::default();
+        online.endpoint.clone_from(&origin);
+        online.sync_records_origin();
+        online.start_desktop_account(None);
+        assert!(online.account_busy);
+        let reply = online
+            .receiver
+            .get_mut()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(12));
+        saved_session::clear(&origin, &session.token).unwrap();
+        service.join().unwrap();
+        let Reply::RestoredSession(token, result) = reply.unwrap().reply else {
+            panic!("expected a restored session reply")
+        };
+        assert_eq!(token, session.token);
+        assert_eq!(result.unwrap().id, 23);
     }
 
     #[test]

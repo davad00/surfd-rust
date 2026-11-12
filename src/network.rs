@@ -14,6 +14,7 @@ use std::{
 
 use crate::{
     catalog::MapMode,
+    loadout::Loadout,
     movement::{CROUCH_EYE_HEIGHT, EYE_HEIGHT},
 };
 
@@ -115,6 +116,8 @@ pub struct PlayerInfo {
     pub spectating: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<RoomIdentity>,
+    #[serde(default, skip_serializing_if = "Loadout::is_default")]
+    pub loadout: Loadout,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -244,6 +247,8 @@ pub(crate) struct RoomCapabilities {
     pub heartbeat_receipts: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub bhop_rooms: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub loadouts: bool,
 }
 
 const CLIENT_CAPABILITIES: RoomCapabilities = RoomCapabilities {
@@ -251,6 +256,7 @@ const CLIENT_CAPABILITIES: RoomCapabilities = RoomCapabilities {
     compact_snapshots: true,
     heartbeat_receipts: true,
     bhop_rooms: true,
+    loadouts: true,
 };
 
 #[derive(Serialize, Deserialize)]
@@ -884,7 +890,7 @@ impl FramedSocket {
         self.snapshot_decoder = Some(SnapshotDecoder::default());
     }
 
-    fn accept_compact_snapshots(&mut self) {
+    pub(crate) fn accept_compact_snapshots(&mut self) {
         self.accept_compressed_snapshots();
         self.accept_compact_snapshots = true;
     }
@@ -1148,6 +1154,7 @@ mod tests {
                     compact_snapshots: false,
                     heartbeat_receipts: false,
                     bhop_rooms: false,
+                    loadouts: false,
                 },
                 ..
             }
@@ -1160,6 +1167,7 @@ mod tests {
                     compact_snapshots: false,
                     heartbeat_receipts: false,
                     bhop_rooms: false,
+                    loadouts: false,
                 },
                 ..
             }
@@ -1167,7 +1175,7 @@ mod tests {
         assert!(matches!(
             decode(br#"{"type":"join","data":{"version":1,"name":"Player","compressed_snapshots":true}}"#).unwrap(),
             Request::Join {
-                capabilities: RoomCapabilities { compressed_snapshots: true, compact_snapshots: false, heartbeat_receipts: false, bhop_rooms: false },
+                capabilities: RoomCapabilities { compressed_snapshots: true, compact_snapshots: false, heartbeat_receipts: false, bhop_rooms: false, loadouts: false },
                 ..
             }
         ));
@@ -1309,6 +1317,7 @@ mod tests {
                 state: None,
                 spectating: None,
                 identity: None,
+                loadout: Loadout::default(),
             })
             .collect();
         let mut compressor = SnapshotEncoder::default();

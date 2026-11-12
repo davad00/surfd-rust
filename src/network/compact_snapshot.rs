@@ -1,6 +1,9 @@
 use std::{io, str};
 
-use crate::record_protocol::ProgressionRank;
+use crate::{
+    loadout::{AvatarSkin, KnifeFinish, Loadout},
+    record_protocol::ProgressionRank,
+};
 
 use super::{PlayerInfo, PlayerState, RoomIdentity, invalid_data};
 
@@ -15,6 +18,8 @@ const FINISHED: u8 = 1 << 5;
 const CROUCHED: u8 = 1 << 6;
 const ACCOUNT: u8 = 1 << 7;
 const MODERATOR: u8 = 1 << 7;
+const RANK_MASK: u8 = 0b111;
+const LOADOUT_SHIFT: u8 = 3;
 
 /// Appends an epoch and a full independent roster to the supplied payload.
 /// All fixed-width values are little-endian. Names have a one-byte byte length.
@@ -23,6 +28,7 @@ pub(super) fn encode<'a>(
     epoch: u64,
     count: usize,
     mut players: impl Iterator<Item = &'a PlayerInfo>,
+    include_loadouts: bool,
 ) -> io::Result<()> {
     if count > MAX_PLAYERS {
         return Err(invalid_data("compact roster has too many players"));
@@ -35,7 +41,7 @@ pub(super) fn encode<'a>(
             let player = players
                 .next()
                 .ok_or_else(|| invalid_data("compact roster has fewer players than declared"))?;
-            encode_player(payload, player)?;
+            encode_player(payload, player, include_loadouts)?;
         }
         if players.next().is_some() {
             return Err(invalid_data(
@@ -54,7 +60,11 @@ fn flag(present: bool, bit: u8) -> u8 {
     if present { bit } else { 0 }
 }
 
-fn encode_player(payload: &mut Vec<u8>, player: &PlayerInfo) -> io::Result<()> {
+fn encode_player(
+    payload: &mut Vec<u8>,
+    player: &PlayerInfo,
+    include_loadouts: bool,
+) -> io::Result<()> {
     let name = player.name.as_bytes();
     if name.len() > MAX_NAME_BYTES {
         return Err(invalid_data("compact roster player name is too long"));
@@ -99,7 +109,17 @@ fn encode_player(payload: &mut Vec<u8>, player: &PlayerInfo) -> io::Result<()> {
             payload.extend_from_slice(&id.to_le_bytes());
         }
         payload.extend_from_slice(&identity.points.to_le_bytes());
-        payload.push(rank_code(identity.rank) | flag(identity.moderator, MODERATOR));
+        // Only capable peers accept the four spare rank-byte bits.
+        let loadout = if include_loadouts && identity.account_id.is_some() {
+            loadout_code(player.loadout)
+        } else {
+            0
+        };
+        payload.push(
+            rank_code(identity.rank)
+                | (loadout << LOADOUT_SHIFT)
+                | flag(identity.moderator, MODERATOR),
+        );
     }
     Ok(())
 }
@@ -155,10 +175,11 @@ fn decode_player(payload: &mut &[u8]) -> io::Result<PlayerInfo> {
     } else {
         None
     };
-    let identity = if flags & IDENTITY != 0 {
-        Some(decode_identity(payload, flags)?)
+    let (identity, loadout) = if flags & IDENTITY != 0 {
+        let (identity, loadout) = decode_identity(payload, flags)?;
+        (Some(identity), loadout)
     } else {
-        None
+        (None, Loadout::default())
     };
     Ok(PlayerInfo {
         id,
@@ -166,6 +187,7 @@ fn decode_player(payload: &mut &[u8]) -> io::Result<PlayerInfo> {
         state,
         spectating,
         identity,
+        loadout,
     })
 }
 
@@ -197,19 +219,55 @@ fn decode_state(payload: &mut &[u8], flags: u8) -> io::Result<PlayerState> {
     })
 }
 
-fn decode_identity(payload: &mut &[u8], flags: u8) -> io::Result<RoomIdentity> {
+fn decode_identity(payload: &mut &[u8], flags: u8) -> io::Result<(RoomIdentity, Loadout)> {
     let account_id = if flags & ACCOUNT != 0 {
         Some(i64::from_le_bytes(take(payload)?))
     } else {
         None
     };
     let points = u32::from_le_bytes(take(payload)?);
-    let rank_and_moderator = u8::from_le_bytes(take(payload)?);
-    Ok(RoomIdentity {
-        account_id,
-        moderator: rank_and_moderator & MODERATOR != 0,
-        points,
-        rank: decode_rank(rank_and_moderator & !MODERATOR)?,
+    let profile_flags = u8::from_le_bytes(take(payload)?);
+    let loadout = decode_loadout((profile_flags & !MODERATOR) >> LOADOUT_SHIFT)?;
+    if account_id.is_none() && !loadout.is_default() {
+        return Err(invalid_data("unexpected guest loadout"));
+    }
+    Ok((
+        RoomIdentity {
+            account_id,
+            moderator: profile_flags & MODERATOR != 0,
+            points,
+            rank: decode_rank(profile_flags & RANK_MASK),
+        },
+        loadout,
+    ))
+}
+
+fn loadout_code(loadout: Loadout) -> u8 {
+    let skin = match loadout.avatar_skin {
+        AvatarSkin::Classic => 0,
+        AvatarSkin::Glacier => 1,
+        AvatarSkin::Ember => 2,
+    };
+    let finish = match loadout.knife_finish {
+        KnifeFinish::Classic => 0,
+        KnifeFinish::Glacier => 1,
+        KnifeFinish::Ember => 2,
+    };
+    skin + 3 * finish
+}
+
+fn decode_loadout(code: u8) -> io::Result<Loadout> {
+    const SKINS: [AvatarSkin; 3] = [AvatarSkin::Classic, AvatarSkin::Glacier, AvatarSkin::Ember];
+    const FINISHES: [KnifeFinish; 3] = [
+        KnifeFinish::Classic,
+        KnifeFinish::Glacier,
+        KnifeFinish::Ember,
+    ];
+    Ok(Loadout {
+        avatar_skin: SKINS[usize::from(code % 3)],
+        knife_finish: *FINISHES
+            .get(usize::from(code / 3))
+            .ok_or_else(|| invalid_data("invalid compact roster loadout"))?,
     })
 }
 
@@ -226,8 +284,8 @@ fn rank_code(rank: ProgressionRank) -> u8 {
     }
 }
 
-fn decode_rank(code: u8) -> io::Result<ProgressionRank> {
-    Ok(match code {
+fn decode_rank(code: u8) -> ProgressionRank {
+    match code {
         0 => ProgressionRank::Unranked,
         1 => ProgressionRank::Rookie,
         2 => ProgressionRank::Surfer,
@@ -236,8 +294,8 @@ fn decode_rank(code: u8) -> io::Result<ProgressionRank> {
         5 => ProgressionRank::Expert,
         6 => ProgressionRank::Master,
         7 => ProgressionRank::Legend,
-        _ => return Err(invalid_data("invalid compact roster rank")),
-    })
+        _ => unreachable!("the compact rank mask allows only eight codes"),
+    }
 }
 
 #[cfg(test)]
@@ -251,12 +309,13 @@ mod tests {
             state: None,
             spectating: None,
             identity: None,
+            loadout: Loadout::default(),
         }
     }
 
     fn encoded(players: &[PlayerInfo]) -> Vec<u8> {
         let mut payload = Vec::new();
-        encode(&mut payload, u64::MAX, players.len(), players.iter()).unwrap();
+        encode(&mut payload, u64::MAX, players.len(), players.iter(), false).unwrap();
         payload
     }
 
@@ -307,6 +366,36 @@ mod tests {
     }
 
     #[test]
+    fn signed_rank_byte_accepts_loadout_without_expanding_the_roster() {
+        let mut surfer = player(1, "Signed");
+        let identity = RoomIdentity {
+            account_id: Some(15),
+            moderator: true,
+            points: 2_000,
+            rank: ProgressionRank::Regular,
+        };
+        surfer.identity = Some(identity);
+        for avatar_skin in AvatarSkin::ALL {
+            for knife_finish in KnifeFinish::ALL {
+                surfer.loadout = Loadout {
+                    avatar_skin,
+                    knife_finish,
+                };
+                let legacy = encoded(&[surfer.clone()]);
+                let mut upgraded = Vec::new();
+                encode(&mut upgraded, u64::MAX, 1, [&surfer].into_iter(), true).unwrap();
+                assert_eq!(legacy.len(), upgraded.len());
+                assert_eq!(legacy[..legacy.len() - 1], upgraded[..upgraded.len() - 1]);
+                assert!(decode(&legacy).unwrap().1[0].loadout.is_default());
+                assert_eq!(decode(&upgraded).unwrap().1, [surfer.clone()]);
+            }
+        }
+        let mut invalid = encoded(&[surfer]);
+        *invalid.last_mut().unwrap() = MODERATOR | (9 << LOADOUT_SHIFT) | 3;
+        assert!(decode(&invalid).is_err());
+    }
+
+    #[test]
     fn enforces_counts_and_utf8_byte_limit_and_keeps_existing_prefix() {
         let boundary = player(1, &"🏄".repeat(24));
         let oversized = player(2, &"🏄".repeat(25));
@@ -314,12 +403,21 @@ mod tests {
         assert_eq!(decode(&encoded(&roster)).unwrap().1, roster);
         assert!(decode(&encoded(&[])).unwrap().1.is_empty());
         let mut payload = vec![21, 22];
-        assert!(encode(&mut payload, 1, 65, roster.iter()).is_err());
-        assert!(encode(&mut payload, 1, 2, [&boundary].into_iter()).is_err());
-        assert!(encode(&mut payload, 1, 0, [&boundary].into_iter()).is_err());
-        assert!(encode(&mut payload, 1, 2, [&boundary, &oversized].into_iter()).is_err());
+        assert!(encode(&mut payload, 1, 65, roster.iter(), false).is_err());
+        assert!(encode(&mut payload, 1, 2, [&boundary].into_iter(), false).is_err());
+        assert!(encode(&mut payload, 1, 0, [&boundary].into_iter(), false).is_err());
+        assert!(
+            encode(
+                &mut payload,
+                1,
+                2,
+                [&boundary, &oversized].into_iter(),
+                false
+            )
+            .is_err()
+        );
         assert_eq!(payload, [21, 22]);
-        encode(&mut payload, 1, 1, [&boundary].into_iter()).unwrap();
+        encode(&mut payload, 1, 1, [&boundary].into_iter(), false).unwrap();
         assert_eq!(&payload[..2], &[21, 22]);
         assert_eq!(decode(&payload[2..]).unwrap().1, [boundary]);
     }

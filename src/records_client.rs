@@ -1,8 +1,9 @@
 use bevy_surf::replay::RunReplay;
 use bevy_surf::{
+    loadout::Loadout,
     network::RoomJoinTicket,
     record_protocol::{
-        Attempt, AttemptRequest, DEFAULT_ENDPOINT, MAX_REPLAY_BYTES, ManagedRoomEntry,
+        Attempt, AttemptRequest, DEFAULT_ENDPOINT, MAX_REPLAY_BYTES, ManagedRoomEntry, Profile,
         RankedSaveLookup, ReserveRankedSave, ServiceError, Submission, SubmissionLookup,
         SubmissionStatus, SubmitRun, replay_sha256,
     },
@@ -101,10 +102,45 @@ fn transient_request(error: &ureq::Error) -> bool {
 }
 
 #[derive(Debug)]
-pub struct RankedSaveFailure {
+pub struct RequestFailure {
     pub message: String,
     pub status: Option<u16>,
     pub retry_after: Option<Duration>,
+}
+
+pub type RankedSaveFailure = RequestFailure;
+
+pub fn restore_profile(base: &str, token: &str) -> Result<Profile, RequestFailure> {
+    account_request(base, "/v1/profile", token, None)
+}
+
+pub fn read_loadout(base: &str, token: &str) -> Result<Option<Loadout>, RequestFailure> {
+    account_request(base, "/v1/loadout", token, None)
+}
+
+pub fn save_loadout(base: &str, token: &str, loadout: Loadout) -> Result<Loadout, RequestFailure> {
+    account_request(base, "/v1/loadout", token, Some(loadout))
+}
+
+fn account_request<T: DeserializeOwned>(
+    base: &str,
+    route: &str,
+    token: &str,
+    loadout: Option<Loadout>,
+) -> Result<T, RequestFailure> {
+    let (agent, url) =
+        target(base, route, Duration::from_secs(6)).map_err(RequestFailure::permanent)?;
+    let response = if let Some(loadout) = loadout {
+        let body = serde_json::to_vec(&loadout)
+            .map_err(|error| RequestFailure::permanent(error.to_string()))?;
+        send_json(&agent, &url, Some(token), &body)
+    } else {
+        agent
+            .get(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .call()
+    };
+    typed_response(response)
 }
 
 pub struct RankedSaveReceipt {
@@ -112,7 +148,7 @@ pub struct RankedSaveReceipt {
     pub restored: bool,
 }
 
-impl RankedSaveFailure {
+impl RequestFailure {
     fn permanent(message: String) -> Self {
         Self {
             message,
@@ -270,7 +306,13 @@ fn ranked_response<T: DeserializeOwned>(
     token: &str,
     body: &[u8],
 ) -> Result<T, RankedSaveFailure> {
-    let response = send_json(agent, url, Some(token), body).map_err(|error| RankedSaveFailure {
+    typed_response(send_json(agent, url, Some(token), body))
+}
+
+fn typed_response<T: DeserializeOwned>(
+    response: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
+) -> Result<T, RequestFailure> {
+    let response = response.map_err(|error| RequestFailure {
         message: format!("Records service: {error}"),
         status: None,
         retry_after: transient_request(&error).then_some(Duration::ZERO),
@@ -282,7 +324,7 @@ fn ranked_response<T: DeserializeOwned>(
     } else {
         attempt_retry_delay(status, response.headers())
     };
-    decode_response(response, 16 * 1024).map_err(|error| RankedSaveFailure {
+    decode_response(response, 16 * 1024).map_err(|error| RequestFailure {
         message: error.message(),
         status: Some(status.as_u16()),
         retry_after,
@@ -358,7 +400,7 @@ pub fn post<T: DeserializeOwned>(
     body: &impl Serialize,
 ) -> Result<T, String> {
     let timeout = match route {
-        "/v1/room-tickets" | "/v1/oauth/start" | "/v1/oauth/poll" => 6,
+        "/v1/room-tickets" | "/v1/oauth/start" | "/v1/oauth/poll" | "/v1/logout" => 6,
         _ => 180,
     };
     let (agent, url) = target(base, route, Duration::from_secs(timeout))?;

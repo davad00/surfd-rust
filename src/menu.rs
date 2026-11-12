@@ -81,6 +81,7 @@ pub enum Page {
 #[derive(Message, Clone, Copy)]
 pub enum MenuRequest {
     QuickPlay,
+    Equip(crate::online::Equip),
     LeaveServer,
     EnterLocalMap,
     StartLesson(&'static str),
@@ -262,6 +263,21 @@ impl MenuState {
 
     pub fn refresh(&mut self) {
         self.dirty = true;
+    }
+
+    pub(crate) fn local_loadout(&self) -> crate::cosmetics::Loadout {
+        crate::cosmetics::Loadout {
+            avatar_skin: self.settings.avatar_skin,
+            knife_finish: self.settings.knife_finish,
+        }
+    }
+
+    pub(crate) fn set_local_loadout(&mut self, loadout: crate::cosmetics::Loadout) {
+        if loadout != self.local_loadout() {
+            self.settings.avatar_skin = loadout.avatar_skin;
+            self.settings.knife_finish = loadout.knife_finish;
+            self.save_settings();
+        }
     }
 
     fn save_settings(&mut self) {
@@ -1039,16 +1055,10 @@ pub fn apply_actions(
                 menu.dirty = true;
             }
             Action::EquipAvatar(skin) => {
-                if menu.settings.avatar_skin != skin {
-                    menu.settings.avatar_skin = skin;
-                    menu.save_settings();
-                }
+                requests.write(MenuRequest::Equip(crate::online::Equip::Avatar(skin)));
             }
             Action::EquipKnife(finish) => {
-                if menu.settings.knife_finish != finish {
-                    menu.settings.knife_finish = finish;
-                    menu.save_settings();
-                }
+                requests.write(MenuRequest::Equip(crate::online::Equip::Knife(finish)));
             }
             Action::ResetSettings => {
                 let (avatar_skin, knife_finish) =
@@ -1375,7 +1385,7 @@ pub fn render(
                                 &online,
                                 &game.course.name,
                             ),
-                            Page::Store => menu_cosmetics::render(layout, &menu.settings),
+                            Page::Store => menu_cosmetics::render(layout, &menu.settings, &online),
                             Page::Moderation => online_ui::panel(
                                 layout,
                                 OnlinePage::Moderation,

@@ -353,6 +353,7 @@ pub fn place_crowd(
                 }),
                 spectating: None,
                 identity: None,
+                loadout: Default::default(),
             }
         })
         .collect();

@@ -34,7 +34,7 @@ mod lesson_drill_feedback;
 use lesson_drill_feedback::DrillTrace;
 
 #[path = "knife_view.rs"]
-mod knife_view;
+pub(crate) mod knife_view;
 #[path = "lesson_live_coach.rs"]
 mod lesson_live_coach;
 pub(super) use lesson_drill_feedback::{DrillFeedback, DrillFinding};
@@ -831,8 +831,8 @@ pub fn run(
         menu.settings.environmental_audio = false;
     }
     let mut online = Online::default();
-    if !bench_mode && let Ok(address) = std::env::var("SURF_CONNECT") {
-        online.queue(crate::online::Action::JoinAddress(address));
+    if !bench_mode {
+        online.start_desktop_account(std::env::var("SURF_CONNECT").ok());
     }
     let plugins = DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
@@ -1424,6 +1424,7 @@ mod tests {
             }),
             spectating: None,
             identity: None,
+            loadout: Default::default(),
         });
 
         let mut app = App::new();
@@ -1458,6 +1459,7 @@ mod tests {
                 state: None,
                 spectating: Some(1),
                 identity: None,
+                loadout: Default::default(),
             };
             let mut surfer = online.players[0].clone();
             surfer.state = Some(PlayerState {
