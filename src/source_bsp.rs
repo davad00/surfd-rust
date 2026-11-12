@@ -68,16 +68,16 @@ pub(crate) fn load_ranked_collision(path: &Path, entry: &CatalogEntry) -> Result
 }
 
 pub fn ranked_files_match(path: &Path, entry: &CatalogEntry) -> bool {
-    let Some(expected) = &entry.source_bsp else {
+    if entry.source_bsp.is_none() {
         return false;
-    };
+    }
     let Ok(bytes) = read_bsp_bytes(path) else {
         return false;
     };
     timer::Sidecar::read(path, &bytes)
         .ok()
         .flatten()
-        .is_some_and(|timer| timer.verify_ranked(expected, entry.mode).is_ok())
+        .is_some_and(|timer| timer.verify_ranked(entry).is_ok())
 }
 
 pub fn map_name(path: &Path) -> Option<&str> {
@@ -232,7 +232,7 @@ fn load_file(
             timer
                 .as_ref()
                 .ok_or("Ranked BSP requires its pinned timer file")?
-                .verify_ranked(source, entry.mode)?;
+                .verify_ranked(entry)?;
             Some(source.board_revision())
         } else {
             None

@@ -62,6 +62,14 @@ struct Sidecar<'a> {
     tracks: Vec<Track>,
     zones: Vec<Zone<'a>>,
     entity_output_fixes: [(); 0],
+    #[serde(skip_serializing_if = "is_false")]
+    source_gravity_outputs: bool,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    source_missing_filters: &'a [String],
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 #[derive(Serialize)]
@@ -105,6 +113,8 @@ pub(crate) fn normalize(
     mode: MapMode,
     tier: Option<u8>,
     spawn_targets: &BTreeMap<String, String>,
+    gravity_outputs: bool,
+    missing_filters: &[String],
 ) -> Result<Vec<u8>, String> {
     if raw.len() > MAX_BYTES {
         return Err("Shavit zone data exceeds the timer limit".into());
@@ -179,6 +189,8 @@ pub(crate) fn normalize(
         tracks,
         zones,
         entity_output_fixes: [],
+        source_gravity_outputs: gravity_outputs,
+        source_missing_filters: missing_filters,
     };
     let mut bytes = Vec::new();
     output
@@ -425,7 +437,16 @@ mod tests {
              "point_a":[20,20,10],"point_b":[18,18,0]}
         ]"#;
         let targets = BTreeMap::from([("stage:0:2".into(), "stage_2".into())]);
-        let bytes = normalize(raw, &"a".repeat(64), MapMode::Surf, Some(3), &targets).unwrap();
+        let bytes = normalize(
+            raw,
+            &"a".repeat(64),
+            MapMode::Surf,
+            Some(3),
+            &targets,
+            false,
+            &[],
+        )
+        .unwrap();
         let output = String::from_utf8(bytes).unwrap();
         assert!(output.contains("\"bottom\": 0,\n      \"height\": 1e-7"));
         assert!(output.contains("\"height\": 0.19999999999999998"));
@@ -433,6 +454,20 @@ mod tests {
             "\"height\": 10,\n      \"index\": 2,\n      \"hook_hammerid\": 32,\n      \"target\": \"stage_2\""
         ));
         assert!(output.ends_with("\n  ],\n  \"entity_output_fixes\": []\n}\n"));
+        let filters = ["fix".to_owned()];
+        let extended = normalize(
+            raw,
+            &"a".repeat(64),
+            MapMode::Surf,
+            Some(3),
+            &targets,
+            true,
+            &filters,
+        )
+        .unwrap();
+        assert!(String::from_utf8(extended).unwrap().ends_with(
+            "\n  \"entity_output_fixes\": [],\n  \"source_gravity_outputs\": true,\n  \"source_missing_filters\": [\n    \"fix\"\n  ]\n}\n"
+        ));
         let json: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(json["tracks"][0]["checkpoints_required"], true);
         assert_eq!(json["tracks"][0]["bhop_enabled"], false);
@@ -446,8 +481,17 @@ mod tests {
             {"type":"end","point_a":[32,32,0],"point_b":[36,36,8]},
             {"type":"checkpoint","index":2,"point_a":[16,16,0],"point_b":[20,20,8]}
         ]"#;
-        let normalize_input =
-            |raw: &[u8]| normalize(raw, &"a".repeat(64), MapMode::Bhop, None, &BTreeMap::new());
+        let normalize_input = |raw: &[u8]| {
+            normalize(
+                raw,
+                &"a".repeat(64),
+                MapMode::Bhop,
+                None,
+                &BTreeMap::new(),
+                false,
+                &[],
+            )
+        };
         assert!(normalize_input(raw).unwrap_err().contains("missing"));
         let mut input: Vec<Value> = serde_json::from_slice(raw).unwrap();
         input[2]["index"] = Value::from(1);

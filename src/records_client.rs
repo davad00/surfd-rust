@@ -58,7 +58,11 @@ pub fn community_catalog_cache_name() -> String {
     use sha2::{Digest, Sha256};
     let endpoint = configured_endpoint();
     let endpoint = endpoint.trim().trim_end_matches('/').to_ascii_lowercase();
-    format!(".community-catalog-v1-{:x}.json", Sha256::digest(endpoint))
+    format!(
+        ".community-catalog-v1-rules{}-{:x}.json",
+        bevy_surf::catalog::SOURCE_MAP_RULES,
+        Sha256::digest(endpoint)
+    )
 }
 
 pub struct RetryableRequestFailure {

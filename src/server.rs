@@ -1099,9 +1099,14 @@ impl Room {
             return false;
         }
         if capabilities.source_map_rules < self.min_source_rules {
+            let version = if self.min_source_rules == 1 {
+                "0.1.8"
+            } else {
+                env!("CARGO_PKG_VERSION")
+            };
             self.reject(
                 id,
-                "This room uses updated Source map physics. Install Surfd Rust v0.1.8 or later to join.",
+                &format!("This room uses updated Source map physics. Install Surfd Rust v{version} or later to join."),
             );
             return false;
         }
@@ -2317,9 +2322,13 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let now = Instant::now();
         let mut room = Room::new(RoomConfig::default(), Moderation::default());
-        for (id, required, supported, accepted) in
-            [(1, 0, 0, true), (2, 1, 0, false), (3, 1, 1, true)]
-        {
+        for (id, required, supported, accepted) in [
+            (1, 0, 0, true),
+            (2, 1, 0, false),
+            (3, 1, 1, true),
+            (4, 2, 1, false),
+            (5, 2, 2, true),
+        ] {
             room.min_source_rules = required;
             let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
             let (stream, address) = listener.accept().unwrap();

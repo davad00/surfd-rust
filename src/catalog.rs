@@ -105,10 +105,25 @@ pub struct CatalogEntry {
     pub download: Option<SourceDownload>,
 }
 
-pub const SOURCE_MAP_RULES: u8 = 1;
+pub const SOURCE_MAP_RULES: u8 = 2;
+pub(crate) const SOURCE_RULES_NORMALIZED_OUTPUTS: u8 = 2;
 
 fn is_zero(value: &u8) -> bool {
     *value == 0
+}
+
+pub(crate) fn valid_source_missing_filters(names: &[String]) -> bool {
+    names.len() <= 32
+        && names.windows(2).all(|pair| pair[0] < pair[1])
+        && names.iter().all(|name| {
+            !name.is_empty()
+                && name.len() <= 64
+                && name.bytes().all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || matches!(byte, b'_' | b'-')
+                })
+        })
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -130,6 +145,14 @@ pub struct ShavitDownload {
     pub tier: Option<u8>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub spawn_targets: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub gravity_outputs: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_filters: Vec<String>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -260,6 +283,9 @@ pub fn configure_community(data: &[u8]) -> Result<(), String> {
                     || shavit.spawn_targets.iter().any(|(key, target)| {
                         key.len() > 32 || target.is_empty() || target.len() > 128
                     })
+                    || !valid_source_missing_filters(&shavit.missing_filters)
+                    || ((shavit.gravity_outputs || !shavit.missing_filters.is_empty())
+                        && entry.min_source_rules < SOURCE_RULES_NORMALIZED_OUTPUTS)
             })
         {
             return Err(format!("Invalid community map entry: {}", entry.id));
@@ -539,6 +565,8 @@ pub mod files {
                 entry.mode,
                 shavit.tier,
                 &shavit.spawn_targets,
+                shavit.gravity_outputs,
+                &shavit.missing_filters,
             )?;
             return write_source_file(
                 &timer,

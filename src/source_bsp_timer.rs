@@ -10,7 +10,9 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use super::{Entity, Geometry, lookup, parse_vector, sidecar_path, source_axes};
-use crate::catalog::{MapMode, SourceBspEntry};
+use crate::catalog::{
+    CatalogEntry, MapMode, SOURCE_RULES_NORMALIZED_OUTPUTS, valid_source_missing_filters,
+};
 use crate::course::{
     BonusRoute, Brush, Course, Plane, PlayerOutput, PlayerOutputValue, PlayerOutputZone,
     PracticeSpawn, Zone, ZoneKind,
@@ -85,6 +87,8 @@ pub(super) struct Sidecar {
     entity_output_fixes: Vec<OutputFix>,
     #[serde(default)]
     source_gravity_outputs: bool,
+    #[serde(default)]
+    source_missing_filters: Vec<String>,
     #[serde(skip)]
     revision: [u8; 32],
 }
@@ -157,6 +161,9 @@ impl Sidecar {
 
         if self.version != 1 {
             return Err(format!("Unsupported timer data version {}", self.version));
+        }
+        if !valid_source_missing_filters(&self.source_missing_filters) {
+            return Err("Invalid imported missing filter names".into());
         }
         if self.bsp_sha256.len() != 64
             || !self.bsp_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -244,17 +251,30 @@ impl Sidecar {
         result.map_err(|error: String| format!("{}: {error}", path.display()))
     }
 
-    pub(super) fn verify_ranked(
-        &self,
-        expected: &SourceBspEntry,
-        mode: MapMode,
-    ) -> Result<(), String> {
-        if self.mode != mode
+    pub(super) fn verify_ranked(&self, entry: &CatalogEntry) -> Result<(), String> {
+        let expected = entry.source_bsp.as_ref().ok_or("No ranked BSP revision")?;
+        if self.mode != entry.mode
             || !self.bsp_sha256.eq_ignore_ascii_case(&expected.bsp_sha256)
             || !format!("{:x}", sha2::digest::Output::<Sha256>::from(self.revision))
                 .eq_ignore_ascii_case(&expected.timer_sha256)
         {
             return Err("Installed BSP or timer data differs from the ranked map revision".into());
+        }
+        if (self.source_gravity_outputs && entry.min_source_rules == 0)
+            || (!self.source_missing_filters.is_empty()
+                && entry.min_source_rules < SOURCE_RULES_NORMALIZED_OUTPUTS)
+            || entry
+                .download
+                .as_ref()
+                .and_then(|download| download.shavit.as_ref())
+                .is_some_and(|shavit| {
+                    (shavit.gravity_outputs
+                        && entry.min_source_rules < SOURCE_RULES_NORMALIZED_OUTPUTS)
+                        || shavit.gravity_outputs != self.source_gravity_outputs
+                        || shavit.missing_filters != self.source_missing_filters
+                })
+        {
+            return Err("Imported entity outputs differ from the ranked map rules".into());
         }
         Ok(())
     }
@@ -285,6 +305,7 @@ impl Sidecar {
             &mut course.zones,
             &self.entity_output_fixes,
             self.source_gravity_outputs,
+            &self.source_missing_filters,
             geometry,
             entities,
         )?;
@@ -737,6 +758,7 @@ fn add_player_outputs(
     zones: &mut Vec<Zone>,
     fixes: &[OutputFix],
     gravity_outputs: bool,
+    missing_filters: &[String],
     geometry: &Geometry,
     entities: &[Entity<'_>],
 ) -> Result<(), String> {
@@ -746,6 +768,7 @@ fn add_player_outputs(
     {
         return Err("Imported output fixes must use supported touch events".into());
     }
+    let missing_filter_boosters = missing_filter_boosters(missing_filters, entities)?;
     let mut matched = BTreeSet::new();
     for (index, entity) in entities.iter().enumerate() {
         let model = entity.model_index().filter(|&index| index != 0);
@@ -754,7 +777,8 @@ fn add_player_outputs(
         let model = model.filter(|_| {
             (touch_trigger || gravity_brush)
                 && entity.get("startdisabled") != Some("1")
-                && entity.get("filtername").is_none_or(str::is_empty)
+                && (entity.get("filtername").is_none_or(str::is_empty)
+                    || missing_filter_boosters.contains(&index))
         });
         let static_client = gravity_outputs && static_client_trigger(entity);
         let brush_gravity = if gravity_brush {
@@ -827,21 +851,85 @@ fn add_player_outputs(
                 || !output.on_touch.is_empty())
         {
             let model = lookup(&geometry.models, model, "output model")?;
-            zones.extend(
-                geometry
-                    .model_brushes(model, entity.placement(), false)?
-                    .into_iter()
-                    .map(|brush| Zone {
-                        brush,
-                        kind: ZoneKind::PlayerOutput(Box::new(output.clone())),
-                    }),
-            );
+            let brushes = geometry.model_brushes(model, entity.placement(), false)?;
+            if brushes.is_empty() && missing_filter_boosters.contains(&index) {
+                return Err("Imported missing filter exit booster has no brush".into());
+            }
+            zones.extend(brushes.into_iter().map(|brush| Zone {
+                brush,
+                kind: ZoneKind::PlayerOutput(Box::new(output.clone())),
+            }));
         }
     }
     if matched.len() != fixes.len() {
         return Err("An imported Stripper output fix did not match a supported BSP output".into());
     }
     Ok(())
+}
+
+fn missing_filter_boosters(
+    names: &[String],
+    entities: &[Entity<'_>],
+) -> Result<BTreeSet<usize>, String> {
+    if names.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let mut unresolved = names.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let mut boosters = BTreeSet::new();
+    for (index, entity) in entities.iter().enumerate() {
+        if let Some(targetname) = entity.get("targetname")
+            && names
+                .iter()
+                .any(|name| targetname.eq_ignore_ascii_case(name))
+        {
+            return Err(format!(
+                "Imported filter {targetname} resolves to a BSP entity"
+            ));
+        }
+        let Some(name) = entity
+            .get("filtername")
+            .and_then(|target| names.iter().find(|name| target.eq_ignore_ascii_case(name)))
+        else {
+            continue;
+        };
+        // Source accepts a client touch when the trigger cannot resolve a filter.
+        // Only use that behavior for the audited static, unnamed exit boosters.
+        let valid_action = if let [(key, value)] = entity.outputs.as_slice() {
+            touch_event(key) == Some(false)
+                && matches!(
+                    parse_player_output(value, false)?,
+                    Some(PlayerOutput {
+                        value: PlayerOutputValue::BaseVelocity(_),
+                        ..
+                    })
+                )
+        } else {
+            false
+        };
+        if entity.get("classname") != Some("trigger_multiple")
+            || entity
+                .get("startdisabled")
+                .is_some_and(|value| value != "0")
+            || entity
+                .get("targetname")
+                .is_some_and(|value| !value.is_empty())
+            || entity.model_index().is_none_or(|model| model == 0)
+            || !static_client_trigger(entity)
+            || !valid_action
+        {
+            return Err(format!(
+                "Imported missing filter {name} must be on a static exit booster"
+            ));
+        }
+        unresolved.remove(name.as_str());
+        boosters.insert(index);
+    }
+    if let Some(name) = unresolved.first() {
+        return Err(format!(
+            "Imported missing filter {name} has no matching exit booster"
+        ));
+    }
+    Ok(boosters)
 }
 
 fn touch_event(name: &str) -> Option<bool> {
@@ -921,6 +1009,7 @@ fn parse_gravity(raw: &str) -> Result<f32, String> {
 #[cfg(test)]
 mod player_output_tests {
     use super::*;
+    use crate::source_bsp::read_entities;
 
     #[test]
     fn source_boosters_accept_case_insensitive_base_velocity_keys() {
@@ -967,5 +1056,40 @@ mod player_output_tests {
         ] {
             assert!(parse_player_output(action, true).is_err());
         }
+    }
+
+    #[test]
+    fn source_missing_filter_rules_accept_only_unresolved_static_exit_boosters() {
+        let booster = r#"{
+            "classname" "trigger_multiple"
+            "filtername" "fix"
+            "model" "*1"
+            "spawnflags" "4097"
+            "StartDisabled" "0"
+            "OnEndTouch" "!activator,AddOutput,basevelocity 0 0 450,0,-1"
+        }"#;
+        let filters = ["fix".into()];
+        let entities = read_entities(booster).unwrap();
+        assert!(missing_filter_boosters(&[], &entities).unwrap().is_empty());
+        assert_eq!(
+            missing_filter_boosters(&filters, &entities).unwrap(),
+            BTreeSet::from([0])
+        );
+        assert!(missing_filter_boosters(&["other".into()], &entities).is_err());
+        for invalid in [
+            booster.replace("\"OnEndTouch\"", "\"OnStartTouch\""),
+            booster.replace("\"trigger_multiple\"", "\"trigger_push\""),
+            booster.replace("\"StartDisabled\" \"0\"", "\"StartDisabled\" \"1\""),
+            booster.replace("\"model\" \"*1\"", "\"model\" \"*0\""),
+            booster.replace(
+                "\"model\" \"*1\"",
+                "\"model\" \"*1\" \"targetname\" \"dynamic\"",
+            ),
+            format!("{booster} {{ \"classname\" \"info_target\" \"targetname\" \"FIX\" }}"),
+        ] {
+            assert!(missing_filter_boosters(&filters, &read_entities(&invalid).unwrap()).is_err());
+        }
+        assert!(!valid_source_missing_filters(&["fix".into(), "fix".into()]));
+        assert!(!valid_source_missing_filters(&["fix*".into()]));
     }
 }
