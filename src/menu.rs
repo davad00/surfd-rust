@@ -1136,6 +1136,7 @@ pub fn render(
     mut previews: Local<BTreeMap<PathBuf, Handle<Image>>>,
     mut mark: Local<Option<Handle<Image>>>,
     mut pause_render: Local<PauseRenderState>,
+    mut knife_previews: Local<Option<menu_cosmetics::KnifePreviews>>,
 ) {
     let board_layout = if menu.page == Page::Pause
         && game.tutorial_lesson().is_none()
@@ -1385,7 +1386,14 @@ pub fn render(
                                 &online,
                                 &game.course.name,
                             ),
-                            Page::Store => menu_cosmetics::render(layout, &menu.settings, &online),
+                            Page::Store => menu_cosmetics::render(
+                                layout,
+                                &menu.settings,
+                                &online,
+                                knife_previews.get_or_insert_with(|| {
+                                    menu_cosmetics::KnifePreviews::new(&mut images)
+                                }),
+                            ),
                             Page::Moderation => online_ui::panel(
                                 layout,
                                 OnlinePage::Moderation,

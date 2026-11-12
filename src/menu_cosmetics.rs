@@ -1,11 +1,21 @@
-use bevy::{math::Rot2, ui::UiTransform};
+use bevy::{color::ColorToPacked, math::Rot2, mesh::VertexAttributeValues};
 
 use super::*;
-use crate::cosmetics::KnifePalette;
+use crate::view::knife_view::world_knife_mesh;
+
+const KNIFE_PREVIEW_SIZE: UVec2 = UVec2::new(136, 72);
+
+pub(crate) struct KnifePreviews([Handle<Image>; KnifeFinish::ALL.len()]);
+
+impl KnifePreviews {
+    pub(super) fn new(images: &mut Assets<Image>) -> Self {
+        Self(KnifeFinish::ALL.map(|finish| images.add(knife_thumbnail(finish))))
+    }
+}
 
 enum Preview {
     Avatar([u8; 3]),
-    Knife(KnifePalette),
+    Knife(Handle<Image>),
 }
 
 struct Item {
@@ -15,7 +25,12 @@ struct Item {
     equip: Action,
 }
 
-pub(super) fn render(parent: &mut ChildSpawnerCommands, settings: &Settings, online: &Online) {
+pub(super) fn render(
+    parent: &mut ChildSpawnerCommands,
+    settings: &Settings,
+    online: &Online,
+    knives: &KnifePreviews,
+) {
     let loadout = online.equipped_loadout(settings);
     section(
         parent,
@@ -30,11 +45,14 @@ pub(super) fn render(parent: &mut ChildSpawnerCommands, settings: &Settings, onl
     section(
         parent,
         "Knife finishes",
-        KnifeFinish::ALL.map(|finish| Item {
-            name: finish.label(),
-            preview: Preview::Knife(finish.palette()),
-            equipped: loadout.knife_finish == finish,
-            equip: Action::EquipKnife(finish),
+        std::array::from_fn(|index| {
+            let finish = KnifeFinish::ALL[index];
+            Item {
+                name: finish.label(),
+                preview: Preview::Knife(knives.0[index].clone()),
+                equipped: loadout.knife_finish == finish,
+                equip: Action::EquipKnife(finish),
+            }
         }),
     );
     let camera = settings.primary_binding(ControlAction::ToggleCamera);
@@ -96,7 +114,7 @@ fn card(parent: &mut ChildSpawnerCommands, item: Item) {
             ))
             .with_children(|preview| match item.preview {
                 Preview::Avatar(rgb) => avatar_preview(preview, rgb),
-                Preview::Knife(palette) => knife_preview(preview, palette),
+                Preview::Knife(image) => knife_preview(preview, image),
             });
             card.spawn(Node {
                 padding: UiRect::axes(px(9), px(6)),
@@ -153,29 +171,101 @@ fn avatar_preview(parent: &mut ChildSpawnerCommands, rgb: [u8; 3]) {
         });
 }
 
-fn knife_preview(parent: &mut ChildSpawnerCommands, palette: KnifePalette) {
-    parent
-        .spawn((
-            Node {
-                width: px(116),
-                height: px(38),
-                ..default()
-            },
-            UiTransform::from_rotation(Rot2::radians(-0.38)),
-            Pickable::IGNORE,
-        ))
-        .with_children(|shape| {
-            piece(shape, 10., 13., 34., 13., shade(palette.handle, 88));
-            for x in [14., 22., 30.] {
-                piece(shape, x, 15., 3., 8., shade(palette.grip, 133));
+fn knife_preview(parent: &mut ChildSpawnerCommands, image: Handle<Image>) {
+    parent.spawn((
+        ImageNode::new(image),
+        Node {
+            width: px(KNIFE_PREVIEW_SIZE.x as f32),
+            height: px(KNIFE_PREVIEW_SIZE.y as f32),
+            ..default()
+        },
+        Pickable::IGNORE,
+    ));
+}
+
+fn knife_thumbnail(finish: KnifeFinish) -> Image {
+    let mesh = world_knife_mesh(finish);
+    let Some(VertexAttributeValues::Float32x3(positions)) =
+        mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+    else {
+        unreachable!("knife mesh has position attributes")
+    };
+    let Some(VertexAttributeValues::Float32x4(colors)) = mesh.attribute(Mesh::ATTRIBUTE_COLOR)
+    else {
+        unreachable!("knife mesh has linear vertex colors")
+    };
+
+    let angle = Quat::from_euler(EulerRot::YXZ, -0.21, 0.10, 0.0);
+    let tilt = Rot2::radians(-0.32);
+    let mut points: Vec<_> = positions
+        .iter()
+        .map(|&position| {
+            let view = angle * Vec3::from_array(position);
+            (tilt * Vec2::new(view.y, -view.x)).extend(view.z)
+        })
+        .collect();
+    let mut min = Vec2::splat(f32::INFINITY);
+    let mut max = Vec2::splat(f32::NEG_INFINITY);
+    for point in &points {
+        min = min.min(point.truncate());
+        max = max.max(point.truncate());
+    }
+    let size = KNIFE_PREVIEW_SIZE * 2;
+    let center = (min + max) * 0.5;
+    let scale = ((size.as_vec2() - Vec2::splat(12.0)) / (max - min)).min_element();
+    for point in &mut points {
+        *point = ((point.truncate() - center) * scale + size.as_vec2() * 0.5).extend(point.z);
+    }
+
+    let pixel_count = (size.x * size.y) as usize;
+    let mut depth = vec![f32::NEG_INFINITY; pixel_count];
+    let mut pixels = vec![0; pixel_count * 4];
+    // The shared knife mesh is a triangle list with lighting baked into its linear colors.
+    for (triangle, color) in points.chunks_exact(3).zip(colors.chunks_exact(3)) {
+        let [a, b, c] = [triangle[0], triangle[1], triangle[2]];
+        let ab = (b - a).truncate();
+        let ac = (c - a).truncate();
+        let area = ab.perp_dot(ac);
+        if area.abs() < 1e-5 {
+            continue;
+        }
+        let low = a.min(b).min(c).truncate().floor().as_uvec2();
+        let high = a.max(b).max(c).truncate().ceil().as_uvec2().min(size);
+        let [color_a, color_b, color_c] = [color[0], color[1], color[2]].map(Vec4::from_array);
+        for y in low.y..high.y {
+            for x in low.x..high.x {
+                let offset = Vec2::new(x as f32 + 0.5, y as f32 + 0.5) - a.truncate();
+                let beta = offset.perp_dot(ac) / area;
+                let gamma = ab.perp_dot(offset) / area;
+                let alpha = 1.0 - beta - gamma;
+                if alpha.min(beta).min(gamma) < 0.0 {
+                    continue;
+                }
+                let z = alpha * a.z + beta * b.z + gamma * c.z;
+                let index = (y * size.x + x) as usize;
+                if z > depth[index] {
+                    depth[index] = z;
+                    let color = alpha * color_a + beta * color_b + gamma * color_c;
+                    pixels[index * 4..index * 4 + 4].copy_from_slice(
+                        &Color::linear_rgba(color.x, color.y, color.z, color.w)
+                            .to_srgba()
+                            .to_u8_array(),
+                    );
+                }
             }
-            piece(shape, 41., 9., 5., 22., shade(palette.handle, 132));
-            piece(shape, 46., 12., 43., 14., shade(palette.blade, 102));
-            piece(shape, 89., 12., 9., 11., shade(palette.blade, 102));
-            piece(shape, 98., 12., 6., 7., shade(palette.blade, 102));
-            piece(shape, 104., 12., 4., 4., shade(palette.bevel, 110));
-            piece(shape, 46., 23., 44., 3., shade(palette.bevel, 108));
-        });
+        }
+    }
+    Image::new(
+        Extent3d {
+            width: size.x,
+            height: size.y,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    )
 }
 
 fn piece(parent: &mut ChildSpawnerCommands, x: f32, y: f32, w: f32, h: f32, color: Color) {
