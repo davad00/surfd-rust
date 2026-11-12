@@ -37,6 +37,7 @@ use crate::{
 pub struct MapGeometry;
 
 const SKY_LAYER: usize = 1;
+const SOURCE_SHADOW_FILL: f32 = 0.25;
 
 // Bevy binds this attribute at the standard color location. The Surfd shader
 // reads only x and y, which hold the blend weight and baked prop light index.
@@ -953,9 +954,23 @@ pub fn update_world(
         .and_then(|faces| cube_map(course, faces))
         .map(|image| images.add(image));
     let exposure = exposure.copied().unwrap_or_default();
+    let inverse_exposure = exposure.exposure().recip();
+    if course
+        .surfaces
+        .iter()
+        .any(|surface| surface.lightmap.is_some())
+    {
+        // Keep deeply shadowed BSP geometry readable under baked lighting.
+        commands.entity(camera).insert(AmbientLight {
+            brightness: SOURCE_SHADOW_FILL * inverse_exposure,
+            ..default()
+        });
+    } else {
+        commands.entity(camera).remove::<AmbientLight>();
+    }
     let skybox = cube.as_ref().map(|image| Skybox {
         image: Some(image.clone()),
-        brightness: exposure.exposure().recip(),
+        brightness: inverse_exposure,
         ..default()
     });
     if has_3d_sky {
@@ -1036,6 +1051,7 @@ pub fn update_world(
         cubes: BTreeMap::new(),
         white: None,
         world_light_shader,
+        lightmap_exposure: inverse_exposure,
     };
     for ((base, light), buffers) in polygon_batches(course) {
         let mesh = meshes.add(buffers.into_mesh());
@@ -1351,6 +1367,7 @@ struct MaterialBank<'a> {
     materials: &'a mut Assets<StandardMaterial>,
     textures: BTreeMap<(usize, TextureUsage), Handle<Image>>,
     by_texture: BTreeMap<(Option<usize>, bool), Handle<StandardMaterial>>,
+    lightmap_exposure: f32,
     cubes: BTreeMap<[usize; 6], Handle<Image>>,
     white: Option<Handle<Image>>,
     world_light_shader: WorldLightShader,
@@ -1407,6 +1424,8 @@ impl MaterialBank<'_> {
             alpha_mode,
             cull_mode: None,
             unlit: !lit,
+            // Source lightmaps already store normalized linear lighting.
+            lightmap_exposure: self.lightmap_exposure,
             perceptual_roughness: 1.0,
             reflectance: 0.0,
             ..default()

@@ -4,11 +4,12 @@ use std::sync::{Mutex, mpsc};
 
 use bevy::prelude::*;
 use bevy_surf::catalog::{
-    self,
+    self, MapMode,
     files::{agent, cache_directory, fetch_asset},
 };
 use bevy_surf::{
     course::Course,
+    local_map,
     session::Session,
     source_bsp,
     surfd_map::{self, VisualLoadOptions},
@@ -51,6 +52,10 @@ pub enum MapSource {
     Downline,
     Tutorial(&'static str),
     Source(PathBuf),
+    RankedBsp {
+        map: String,
+        path: PathBuf,
+    },
     Catalog {
         slug: String,
         geometry: String,
@@ -75,7 +80,17 @@ impl MapSource {
             Self::Tutorial(id) => {
                 tutorial::course(id).ok_or_else(|| format!("Unknown lesson: {id}"))
             }
-            Self::Source(path) => source_bsp::load(&path),
+            Self::Source(path) => {
+                let course = local_map::load(&path)?;
+                if !local_map::has_start_and_finish(&course) {
+                    return Err("This map has no verified start and finish zones.".into());
+                }
+                Ok(course)
+            }
+            Self::RankedBsp { map, path } => {
+                let entry = catalog::find(&map).ok_or("Unknown ranked Source map")?;
+                source_bsp::load_ranked(&path, entry)
+            }
             Self::Catalog {
                 slug,
                 geometry,
@@ -98,10 +113,104 @@ pub struct MapEntry {
     pub id: String,
     pub name: String,
     pub detail: String,
+    pub mode: MapMode,
+    pub tier: Option<u8>,
     pub source: MapSource,
 }
 
+#[cfg(test)]
+mod local_map_tests {
+    use super::*;
+
+    #[test]
+    fn reads_local_maps_from_distinct_roots_without_shadowing_catalog() {
+        use sha2::{Digest, Sha256};
+
+        let root = std::env::temp_dir().join(format!("surfd-local-maps-{}", std::process::id()));
+        let portable = root.join("portable");
+        let bsp = b"VBSP\x14\0\0\0";
+        let timer = |mode: &str, bytes: &[u8]| {
+            let zones = ["start", "end"].map(|kind| {
+                serde_json::json!({
+                    "kind": kind, "points": [[0, 0], [64, 0], [0, 64]], "bottom": 0, "height": 64
+                })
+            });
+            serde_json::json!({
+                "version": 1, "timer": "shavit", "mode": mode, "bsp_sha256": format!("{:x}", Sha256::digest(bytes)),
+                "tracks": [{ "id": 0, "checkpoints_required": false, "checkpoints_ordered": true,
+                    "limit_start_ground_speed": false, "bhop_enabled": false }],
+                "zones": zones
+            })
+            .to_string()
+        };
+        fs::create_dir_all(&portable).unwrap();
+        fs::write(root.join("surf_kitsune.bsp"), bsp).unwrap();
+        fs::write(
+            root.join("surf_kitsune.metadata.json"),
+            br#"{"mode":"surf","tier":1}"#,
+        )
+        .unwrap();
+        fs::write(root.join("surf_kitsune.surf.json"), timer("surf", bsp)).unwrap();
+        fs::write(portable.join("bhop_easy.BSP"), bsp).unwrap();
+        fs::write(
+            portable.join("bhop_easy.metadata.json"),
+            br#"{"mode":"bhop","tier":1}"#,
+        )
+        .unwrap();
+        fs::write(portable.join("bhop_easy.surf.json"), timer("bhop", bsp)).unwrap();
+        fs::write(portable.join("surf_untiered.bsp"), bsp).unwrap();
+        fs::write(portable.join("surf_untiered.surf.json"), timer("surf", bsp)).unwrap();
+        fs::write(portable.join("bhop_untimed.bsp"), bsp).unwrap();
+        fs::write(
+            portable.join("bhop_untimed.metadata.json"),
+            br#"{"mode":"bhop","tier":1,"timed":true}"#,
+        )
+        .unwrap();
+        fs::write(
+            portable.join("bhop_untimed.surf.json"),
+            timer("bhop", b"different BSP"),
+        )
+        .unwrap();
+
+        let library = MapLibrary::read_with_roots(
+            root.clone(),
+            [root.clone(), root.join("."), portable.clone()],
+        );
+        let local = library
+            .entries
+            .iter()
+            .filter(|entry| entry.is_local())
+            .collect::<Vec<_>>();
+        assert_eq!(local.len(), 2);
+        assert!(local.iter().any(|entry| entry.name == "bhop_easy"));
+        assert!(local.iter().any(|entry| entry.id == "local:surf_kitsune"));
+        assert!(matches!(
+            library.catalog_source("surf_kitsune"),
+            Some(MapSource::Catalog { .. })
+        ));
+        fs::remove_file(portable.join("bhop_easy.surf.json")).unwrap();
+        fs::remove_file(portable.join("bhop_easy.metadata.json")).unwrap();
+        fs::remove_file(portable.join("surf_untiered.bsp")).unwrap();
+        fs::remove_file(portable.join("surf_untiered.surf.json")).unwrap();
+        fs::remove_file(portable.join("bhop_untimed.bsp")).unwrap();
+        fs::remove_file(portable.join("bhop_untimed.metadata.json")).unwrap();
+        fs::remove_file(portable.join("bhop_untimed.surf.json")).unwrap();
+        fs::remove_file(portable.join("bhop_easy.BSP")).unwrap();
+        fs::remove_file(portable.join("bhop_easy.BSP.timer-check.json")).unwrap();
+        fs::remove_file(root.join("surf_kitsune.metadata.json")).unwrap();
+        fs::remove_file(root.join("surf_kitsune.surf.json")).unwrap();
+        fs::remove_file(root.join("surf_kitsune.bsp")).unwrap();
+        fs::remove_file(root.join("surf_kitsune.bsp.timer-check.json")).unwrap();
+        fs::remove_dir(portable).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+}
+
 impl MapEntry {
+    pub fn is_local(&self) -> bool {
+        matches!(&self.source, MapSource::Source(_))
+    }
+
     pub fn preview(&self) -> Option<PathBuf> {
         let MapSource::Catalog { slug, .. } = &self.source else {
             return None;
@@ -112,7 +221,8 @@ impl MapEntry {
     pub fn status(&self, directory: &Path) -> &'static str {
         match &self.source {
             MapSource::Downline | MapSource::Tutorial(_) => "BUILT IN",
-            MapSource::Source(_) => "LOCAL BSP",
+            MapSource::Source(_) => "LOCAL MAP",
+            MapSource::RankedBsp { .. } => "RANKED BSP",
             MapSource::Catalog { slug, .. }
                 if cache_directory(directory, slug).join("ready").is_file() =>
             {
@@ -127,7 +237,6 @@ impl MapEntry {
 pub struct MapLibrary {
     pub entries: Vec<MapEntry>,
     pub directory: PathBuf,
-    pub catalog_count: usize,
     use_bc: bool,
 }
 
@@ -183,69 +292,118 @@ impl MapLibrary {
 
     pub fn read() -> Self {
         let directory = environment_directory("SURF_DATA").unwrap_or_else(default_data_directory);
+        let mut roots = vec![directory.clone()];
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(parent) = exe.parent()
+        {
+            roots.push(parent.join("maps"));
+        }
+        if let Some(configured) = std::env::var_os("SURF_MAPS") {
+            roots.extend(std::env::split_paths(&configured));
+        }
+        Self::read_with_roots(directory, roots)
+    }
+
+    fn read_with_roots(directory: PathBuf, roots: impl IntoIterator<Item = PathBuf>) -> Self {
         let catalog = catalog::entries();
-        let catalog_count = catalog.len();
         let mut entries = vec![MapEntry {
             id: "downline".into(),
             name: "Downline".into(),
             detail: "Original practice course · Linear".into(),
+            mode: MapMode::Surf,
+            tier: None,
             source: MapSource::Downline,
         }];
-        entries.extend(catalog.iter().cloned().map(|map| {
-            let tier = map
-                .tier
-                .map_or(String::new(), |tier| format!(" · Tier {tier}"));
-            let bonuses = if map.bonuses > 0 {
-                format!(" · {} bonuses", map.bonuses)
-            } else {
-                String::new()
-            };
-            MapEntry {
-                id: map.id,
-                name: map.name,
-                detail: format!("{} · {}{tier}{bonuses}", map.author, map.layout),
-                source: MapSource::Catalog {
-                    slug: map.slug,
-                    geometry: map.geometry,
-                    visual: map.visual,
-                    bonus_pack: map.bonus_pack,
-                },
-            }
-        }));
+        entries.extend(
+            catalog
+                .iter()
+                .filter(|map| map.source_bsp.is_none())
+                .cloned()
+                .map(|map| {
+                    let bonuses = if map.bonuses > 0 {
+                        format!(" · {} bonuses", map.bonuses)
+                    } else {
+                        String::new()
+                    };
+                    MapEntry {
+                        id: map.id,
+                        name: map.name,
+                        detail: format!("{} · {}{bonuses}", map.author, map.layout),
+                        mode: map.mode,
+                        tier: map.tier,
+                        source: MapSource::Catalog {
+                            slug: map.slug,
+                            geometry: map.geometry,
+                            visual: map.visual,
+                            bonus_pack: map.bonus_pack,
+                        },
+                    }
+                }),
+        );
 
-        let mut roots = vec![directory.clone()];
-        if let Some(configured) = std::env::var_os("SURF_MAPS") {
-            roots.extend(std::env::split_paths(&configured));
-        }
+        let mut roots: Vec<_> = roots
+            .into_iter()
+            .filter_map(|root| root.canonicalize().ok())
+            .collect();
+        roots.sort_unstable();
+        roots.dedup();
         let mut files = Vec::new();
         for root in roots {
             if let Ok(list) = fs::read_dir(root) {
-                files.extend(list.flatten().map(|entry| entry.path()).filter(|path| {
-                    path.extension()
-                        .is_some_and(|ext| ext.eq_ignore_ascii_case("bsp"))
-                        && path.is_file()
-                }));
+                files.extend(
+                    list.flatten()
+                        .map(|entry| entry.path())
+                        .filter(|path| local_map::map_name(path).is_some() && path.is_file()),
+                );
             }
         }
         files.sort_unstable();
         files.dedup();
+        let mut names = std::collections::HashSet::new();
+        let mut ranked_names = std::collections::HashSet::new();
         for path in files {
-            let name = path
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
+            let name = local_map::map_name(&path)
+                .expect("filtered local map filename")
+                .to_owned();
+            let metadata = source_bsp::map_metadata(&path);
+            if metadata.tier.is_none() || !local_map::has_timer(&path, &metadata) {
+                continue;
+            }
+            let mode = metadata
+                .mode
+                .unwrap_or_else(|| local_map::default_mode(&path, &name));
+            if let Some(map) = catalog::find(&name).filter(|map| map.source_bsp.is_some())
+                && !ranked_names.contains(&map.id)
+                && source_bsp::ranked_files_match(&path, map)
+            {
+                ranked_names.insert(map.id.clone());
+                entries.push(MapEntry {
+                    id: map.id.clone(),
+                    name: map.name.clone(),
+                    detail: "Source BSP · Ranked".into(),
+                    mode: map.mode,
+                    tier: map.tier.or(metadata.tier),
+                    source: MapSource::RankedBsp {
+                        map: map.id.clone(),
+                        path: path.clone(),
+                    },
+                });
+            }
+            if !names.insert(name.to_ascii_lowercase()) {
+                continue;
+            }
             entries.push(MapEntry {
-                id: name.clone(),
+                id: format!("local:{name}"),
                 name,
-                detail: "Counter-Strike: Source · Original BSP".into(),
+                detail: "Local practice".into(),
+                mode,
+                tier: metadata.tier,
                 source: MapSource::Source(path),
             });
         }
         Self {
             entries,
             directory,
-            catalog_count,
             use_bc: false,
         }
     }
@@ -257,7 +415,28 @@ impl MapLibrary {
             {
                 Some(entry.source.clone())
             }
+            MapSource::RankedBsp { map, .. } if name.eq_ignore_ascii_case(map) => {
+                Some(entry.source.clone())
+            }
             _ => None,
+        })
+    }
+
+    pub fn room_source(&self, name: &str, mode: MapMode, managed: bool) -> Option<MapSource> {
+        if name.eq_ignore_ascii_case("downline") && mode == MapMode::Surf {
+            return Some(MapSource::Downline);
+        }
+        if catalog::find(name).is_some_and(|entry| entry.mode == mode)
+            && let Some(source) = self.catalog_source(name)
+        {
+            return Some(source);
+        }
+        if managed {
+            return None;
+        }
+        self.entries.iter().find_map(|entry| {
+            (entry.is_local() && entry.mode == mode && entry.name.eq_ignore_ascii_case(name))
+                .then(|| entry.source.clone())
         })
     }
 }

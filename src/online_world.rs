@@ -1,4 +1,6 @@
 use crate::{
+    cosmetics::AvatarSkin,
+    menu::MenuState,
     online::Online,
     view::{Game, ViewCamera},
 };
@@ -22,6 +24,7 @@ pub struct Actors {
     local: Option<Entity>,
     ghost: Option<Entity>,
     handles: Option<AgentAssets>,
+    skins: [Option<Handle<StandardMaterial>>; 3],
     version: Option<u64>,
 }
 
@@ -91,6 +94,7 @@ pub fn update_players(
     mut commands: Commands,
     online: Res<Online>,
     game: Res<Game>,
+    menu: Res<MenuState>,
     camera: Single<&Transform, (With<ViewCamera>, Without<RemoteAvatar>)>,
     mut assets: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -98,6 +102,7 @@ pub fn update_players(
     mut ghost_materials: ResMut<Assets<GhostMaterial>>,
     mut remote_materials: ResMut<Assets<RemoteMaterial>>,
     mut avatars: Query<(&mut Transform, &mut Mesh3d, &mut Visibility), With<RemoteAvatar>>,
+    mut local_materials: Query<&mut MeshMaterial3d<StandardMaterial>, With<RemoteAvatar>>,
     mut actors: Local<Actors>,
 ) {
     if actors.version != Some(game.course_version) {
@@ -148,22 +153,36 @@ pub fn update_players(
         let pose =
             Transform::from_translation(position).with_rotation(Quat::from_rotation_y(yaw + PI));
         let mesh = agent.mesh(crouched);
+        let skin = menu.settings.avatar_skin;
+        let material = if let Some(tint) = skin.tint() {
+            let index = AvatarSkin::ALL
+                .iter()
+                .position(|&choice| choice == skin)
+                .expect("registered player skin");
+            actors.skins[index]
+                .get_or_insert_with(|| {
+                    let atlas = images.add(agent_atlas(Some(tint)));
+                    materials.add(player_material(atlas))
+                })
+                .clone()
+        } else {
+            agent.local.clone()
+        };
         if let Some(entity) = actors.local {
             if let Ok((mut transform, mut current_mesh, mut visibility)) = avatars.get_mut(entity) {
                 transform.set_if_neq(pose);
                 current_mesh.set_if_neq(mesh);
                 visibility.set_if_neq(visible);
             }
+            if let Ok(mut equipped) = local_materials.get_mut(entity)
+                && equipped.0 != material
+            {
+                equipped.0 = material;
+            }
         } else {
             actors.local = Some(
                 commands
-                    .spawn((
-                        RemoteAvatar,
-                        mesh,
-                        MeshMaterial3d(agent.local.clone()),
-                        pose,
-                        visible,
-                    ))
+                    .spawn((RemoteAvatar, mesh, MeshMaterial3d(material), pose, visible))
                     .id(),
             );
         }
@@ -276,31 +295,11 @@ fn load_agent(
     ghost_materials: &mut Assets<GhostMaterial>,
     remote_materials: &mut Assets<RemoteMaterial>,
 ) -> AgentAssets {
-    let atlas = image::load_from_memory(include_bytes!("../assets/agent/atlas.png"))
-        .expect("embedded Surfd agent atlas")
-        .into_rgba8();
-    let mut image = Image::new(
-        Extent3d {
-            width: atlas.width(),
-            height: atlas.height(),
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        atlas.into_raw(),
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::RENDER_WORLD,
-    );
-    image.sampler = ImageSampler::linear();
-    let atlas = images.add(image);
+    let atlas = images.add(agent_atlas(None));
     AgentAssets {
         standing: meshes.add(agent_mesh(false)),
         crouching: meshes.add(agent_mesh(true)),
-        local: materials.add(StandardMaterial {
-            base_color_texture: Some(atlas.clone()),
-            unlit: true,
-            fog_enabled: false,
-            ..default()
-        }),
+        local: materials.add(player_material(atlas.clone())),
         remote: remote_materials.add(RemoteMaterial {
             base: StandardMaterial {
                 base_color_texture: Some(atlas.clone()),
@@ -315,6 +314,80 @@ fn load_agent(
             opacity: 0.45,
             atlas,
         }),
+    }
+}
+
+fn player_material(atlas: Handle<Image>) -> StandardMaterial {
+    StandardMaterial {
+        base_color_texture: Some(atlas),
+        unlit: true,
+        fog_enabled: false,
+        ..default()
+    }
+}
+
+fn agent_atlas(tint: Option<[u8; 3]>) -> Image {
+    let mut atlas = image::load_from_memory(include_bytes!("../assets/agent/atlas.png"))
+        .expect("embedded Surfd agent atlas")
+        .into_rgba8();
+    if let Some(tint) = tint {
+        recolor_clothing(&mut atlas, tint);
+    }
+    let mut image = Image::new(
+        Extent3d {
+            width: atlas.width(),
+            height: atlas.height(),
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        atlas.into_raw(),
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.sampler = ImageSampler::linear();
+    image
+}
+
+fn recolor_clothing(atlas: &mut image::RgbaImage, tint: [u8; 3]) {
+    // Atlas coordinates for the jacket, pants, and sleeve. Face, hands, hair,
+    // eyes, and shoes retain their original pixels.
+    for (x, y, pixel) in atlas.enumerate_pixels_mut() {
+        let body = x < 128 && y < 128;
+        let sleeve = (96..128).contains(&x) && (128..216).contains(&y);
+        if !body && !sleeve {
+            continue;
+        }
+        let [r, g, b, _] = pixel.0;
+        let brightest = r.max(g).max(b);
+        if brightest > 128 || brightest - r.min(g).min(b) > 18 {
+            continue;
+        }
+        let light = (u16::from(r) + u16::from(g) + u16::from(b)) / 3;
+        for (channel, color) in pixel.0[..3].iter_mut().zip(tint) {
+            *channel = ((u16::from(color) * (light + 24) / 105).min(255)) as u8;
+        }
+    }
+}
+
+#[cfg(test)]
+mod skin_tests {
+    use super::*;
+
+    #[test]
+    fn skins_change_clothing_without_recoloring_the_face_hands_or_eyes() {
+        let original = image::load_from_memory(include_bytes!("../assets/agent/atlas.png"))
+            .unwrap()
+            .into_rgba8();
+        let mut glacier = original.clone();
+        let mut ember = original.clone();
+        recolor_clothing(&mut glacier, AvatarSkin::Glacier.tint().unwrap());
+        recolor_clothing(&mut ember, AvatarSkin::Ember.tint().unwrap());
+        for (x, y) in [(150, 90), (32, 236), (110, 230), (30, 159)] {
+            assert_eq!(glacier.get_pixel(x, y), original.get_pixel(x, y));
+            assert_eq!(ember.get_pixel(x, y), original.get_pixel(x, y));
+        }
+        assert_ne!(glacier.get_pixel(80, 60), original.get_pixel(80, 60));
+        assert_ne!(glacier.get_pixel(80, 60), ember.get_pixel(80, 60));
     }
 }
 

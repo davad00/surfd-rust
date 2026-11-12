@@ -1,0 +1,16 @@
+[
+  {
+    "id": "bhop_easy",
+    "slug": "bhop_easy",
+    "name": "bhop_easy",
+    "author": "Community map",
+    "mode": "bhop",
+    "tier": 1,
+    "type": "linear",
+    "bonuses": 1,
+    "sourceBsp": {
+      "bspSha256": "6f42e1bfeb3dd1ee01bed9c77e192f7c19cf7bd8c99605c03971e55da783601c",
+      "timerSha256": "722534ed9304a70f178712608a49006cc425c298961fc733c310cac68df81ba5"
+    }
+  }
+]

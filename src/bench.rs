@@ -324,6 +324,7 @@ pub fn place_crowd(
     online.room = Some(RoomInfo {
         name: "Benchmark crowd".into(),
         map: game.course.name.clone(),
+        mode: game.course.map_mode(),
         players: usize::from(crowd.count),
         capacity: 64,
         room_id: None,

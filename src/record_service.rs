@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 use crate::{
-    catalog,
+    catalog::{self, MapMode},
     course::Course,
     network::{
         RoomJoinTicket, RoomTicketKey, normalize_address, room_address_authority,
@@ -88,6 +88,11 @@ const SCHEMA: &str = "
     );
     CREATE INDEX IF NOT EXISTS ranked_receipt_expiration ON ranked_submission_receipts(expires);
     CREATE INDEX IF NOT EXISTS ranked_receipt_account ON ranked_submission_receipts(account);
+    CREATE TABLE IF NOT EXISTS ranked_replay_owners (
+        replay_sha256 TEXT NOT NULL,
+        account INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        PRIMARY KEY(replay_sha256, account)
+    ) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS ranked_save_reservations (
         id TEXT PRIMARY KEY,
         attempt BLOB NOT NULL UNIQUE,
@@ -174,14 +179,22 @@ impl RoomDirectory {
             .filter(|entry| !entry.is_empty())
         {
             let mut fields = config.split('|').map(str::trim);
-            let (Some(id), Some(address), Some(secret), None) =
-                (fields.next(), fields.next(), fields.next(), fields.next())
-            else {
+            let (Some(id), Some(address), Some(secret), mode, None) = (
+                fields.next(),
+                fields.next(),
+                fields.next(),
+                fields.next(),
+                fields.next(),
+            ) else {
                 return Err(
-                    "Use room_id|address|key entries separated by semicolons in SURF_ROOM_TICKETS."
+                    "Use room_id|address|key or room_id|address|key|mode entries separated by semicolons in SURF_ROOM_TICKETS."
                         .into(),
                 );
             };
+            let mode = mode.map_or(Ok(crate::catalog::MapMode::Surf), |mode| {
+                crate::catalog::MapMode::parse(mode)
+                    .ok_or("Managed room mode must be surf or bhop.")
+            })?;
             let key = RoomTicketKey::from_hex(id, secret)?;
             let address = normalize_address(address)?;
             if !room_address_is_loopback(&address) && !room_address_uses_tls(&address) {
@@ -209,6 +222,7 @@ impl RoomDirectory {
                 ManagedRoomEntry {
                     room_id: id.into(),
                     address,
+                    mode,
                 },
                 key,
             ));
@@ -293,9 +307,10 @@ pub fn serve(address: SocketAddr, data: &Path, maps: &Path) -> std::result::Resu
         _ => return Err("SURF_RECORDS_TRUST_REAL_IP must be 0 or 1.".into()),
     };
     fs::create_dir_all(data).map_err(|error| error.to_string())?;
-    let db = Connection::open(data.join(DATABASE_FILE)).map_err(|error| error.to_string())?;
+    let mut db = Connection::open(data.join(DATABASE_FILE)).map_err(|error| error.to_string())?;
     db.execute_batch(SCHEMA)
         .map_err(|error| error.to_string())?;
+    index_ranked_replay_owners(&mut db).map_err(|error| error.to_string())?;
     prune_submission_receipts(&db, unix_now()).map_err(|error| error.message)?;
     crate::social_service::init(&db).map_err(|error| error.to_string())?;
     let service = Arc::new(Service {
@@ -522,13 +537,22 @@ impl Service {
                     .map(|(entry, _)| entry)
                     .collect::<Vec<_>>(),
             ),
-            (Method::Get, ["v1", "progression"]) => {
+            (
+                Method::Get,
+                ["v1", "progression"]
+                | ["v1", "progression", "surf"]
+                | ["v1", "progression", "bhop"],
+            ) => {
+                let mode = parts
+                    .get(2)
+                    .and_then(|mode| MapMode::parse(mode))
+                    .unwrap_or_default();
                 let db = self.db.lock().map_err(internal)?;
                 let own = bearer
                     .as_deref()
                     .map(|token| account(&db, Some(token)))
                     .transpose()?;
-                encode(&progression(&db, own)?)
+                encode(&progression(&db, own, mode)?)
             }
             (Method::Post, ["v1", "room-tickets"]) => {
                 self.limit(
@@ -779,7 +803,7 @@ impl Service {
     ) -> Result<RoomJoinTicket> {
         let address =
             normalize_address(&request.address).map_err(|message| ApiError::new(400, message))?;
-        let (_, signer) = self
+        let (entry, signer) = self
             .room_directory
             .rooms
             .iter()
@@ -797,7 +821,7 @@ impl Service {
                 db.query_row("SELECT name FROM accounts WHERE id=?1", [id], |row| {
                     row.get(0)
                 })?;
-            let points = account_progression(&db, id)?.points;
+            let points = account_progression(&db, id, entry.mode)?.points;
             Some((
                 id,
                 name,
@@ -807,7 +831,9 @@ impl Service {
         } else {
             None
         };
-        signer.issue(identity, ticket_time()).map_err(internal)
+        signer
+            .issue_for_mode(entry.mode, identity, ticket_time())
+            .map_err(internal)
     }
 
     fn login(&self, credentials: Credentials) -> Result<SignedIn> {
@@ -1005,7 +1031,7 @@ impl Service {
                 | "Master"
                 | "Legend"
         ) {
-            return Ok(account_progression(db, id)?.rank.label() == title);
+            return Ok(account_progression(db, id, MapMode::Surf)?.rank.label() == title);
         }
         if title == "Ten maps deep" {
             let completed: i64 = db.query_row(
@@ -1150,6 +1176,13 @@ impl Service {
         if let Some(saved) = submission_receipt(&transaction, &ticket, owner, &fingerprint, now)? {
             return Ok(saved);
         }
+        let distinct_replay = replay.has_distinct_aim_pattern();
+        if distinct_replay && copied_ranked_replay(&transaction, owner, &fingerprint)? {
+            return Err(ApiError::new(
+                409,
+                "This replay was already published by another account.",
+            ));
+        }
         let consumed = transaction.execute(
             "UPDATE attempts SET used=1
              WHERE token=?1 AND expires>?2 AND used=0 AND (account IS NULL OR account=?3)
@@ -1184,15 +1217,20 @@ impl Service {
                 stages: &verified.stages,
             },
         )?;
+        if distinct_replay && (changed == 1 || stage_improved) {
+            remember_ranked_replay(&transaction, owner, &fingerprint)?;
+        }
+        let mode = catalog::find(map).map_or(MapMode::Surf, |entry| entry.mode);
         let progression = (changed == 1)
-            .then(|| account_progression(&transaction, owner))
+            .then(|| account_progression(&transaction, owner, mode))
             .transpose()?;
         let saved = Submission {
             time_us: verified.time_us,
             personal_best: changed == 1,
             run_id: (changed == 1 || stage_improved).then_some(id),
             stage_records,
-            progression,
+            progression: progression.filter(|_| mode == MapMode::Surf),
+            bhop_progression: progression.filter(|_| mode == MapMode::Bhop),
         };
         prune_submission_receipts(&transaction, now)?;
         transaction.execute(
@@ -1480,6 +1518,51 @@ fn unavailable_attempt() -> ApiError {
     ApiError::new(409, "This ranked attempt has expired or already been used")
 }
 
+fn copied_ranked_replay(db: &Connection, owner: i64, fingerprint: &str) -> rusqlite::Result<bool> {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM ranked_replay_owners WHERE replay_sha256=?1)
+          AND NOT EXISTS(SELECT 1 FROM ranked_replay_owners WHERE replay_sha256=?1 AND account=?2)",
+        params![fingerprint, owner],
+        |row| row.get(0),
+    )
+}
+
+fn remember_ranked_replay(db: &Connection, owner: i64, fingerprint: &str) -> rusqlite::Result<()> {
+    db.execute(
+        "INSERT OR IGNORE INTO ranked_replay_owners(replay_sha256,account) VALUES (?1,?2)",
+        params![fingerprint, owner],
+    )?;
+    Ok(())
+}
+
+fn index_ranked_replay_owners(db: &mut Connection) -> rusqlite::Result<()> {
+    let version: u32 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if version >= 1 {
+        return Ok(());
+    }
+    let transaction = db.transaction()?;
+    {
+        let mut statement = transaction.prepare(
+            "SELECT account,replay FROM best_runs UNION ALL SELECT account,replay FROM stage_replays",
+        )?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let payload: String = row.get(1)?;
+            if serde_json::from_str::<replay::RunReplay>(&payload)
+                .is_ok_and(|replay| replay.has_distinct_aim_pattern())
+            {
+                remember_ranked_replay(
+                    &transaction,
+                    row.get(0)?,
+                    &replay_sha256(payload.as_bytes()),
+                )?;
+            }
+        }
+    }
+    transaction.pragma_update(None, "user_version", 1)?;
+    transaction.commit()
+}
+
 fn prune_submission_receipts(db: &Connection, now: i64) -> Result<()> {
     db.execute(
         "DELETE FROM ranked_submission_receipts WHERE expires<=?1",
@@ -1569,8 +1652,11 @@ fn submission_receipt(
 }
 
 fn bonus_pack_revision(map: &str) -> Option<&'static str> {
-    let pack = catalog::find(map)?.bonus_pack.as_deref()?;
-    catalog::revision(pack)
+    let entry = catalog::find(map)?;
+    if let Some(source) = &entry.source_bsp {
+        return Some(&source.timer_sha256);
+    }
+    catalog::revision(entry.bonus_pack.as_deref()?)
 }
 
 fn replay_course_available(
@@ -1584,6 +1670,21 @@ fn replay_course_available(
     };
     if version != "v1" && version != format!("v{}", replay::REPLAY_VERSION) {
         return false;
+    }
+    if let Some(entry) = catalog::find(map)
+        && let Some(source) = &entry.source_bsp
+    {
+        if version != format!("v{}", replay::REPLAY_VERSION) {
+            return false;
+        }
+        return if let Some(number) = bonus {
+            number > 0
+                && usize::from(number) <= entry.bonuses
+                && saved_bonus_pack.is_none_or(|saved| saved == source.timer_sha256)
+                && source.bonus_board_revision(number).as_deref() == Some(board)
+        } else {
+            entry.native_board_revision().as_deref() == Some(board)
+        };
     }
     let (board, profile) = PhysicsProfile::split_revision(board);
     let builtin;
@@ -1645,7 +1746,9 @@ fn player_runs(
         let time_us = row.get(4)?;
         let ticks: Option<u32> = row.get(6)?;
         let compatible = replay_course_available(&map, bonus, &revision, pack.as_deref());
-        let active_profile = if map == "Downline" {
+        let active_profile = if map == "Downline"
+            || catalog::find(&map).is_some_and(|entry| entry.source_bsp.is_some())
+        {
             PhysicsProfile::Legacy
         } else if bonus.is_some() {
             PhysicsProfile::SurfdBonus
@@ -1841,6 +1944,7 @@ fn profile(db: &Connection, id: i64) -> Result<Profile> {
     )
     .optional()?
     .ok_or_else(|| ApiError::new(404, "Player not found"))?;
+    let progress = account_ranked_progress(db, id)?;
     Ok(Profile {
         id,
         name,
@@ -1849,48 +1953,64 @@ fn profile(db: &Connection, id: i64) -> Result<Profile> {
         banner,
         revision,
         showcase: serde_json::from_str(&showcase).map_err(internal)?,
-        progression: account_progression(db, id)?,
+        progression: progress.stats(MapMode::Surf),
+        bhop_progression: progress.stats(MapMode::Bhop),
     })
 }
 
 #[derive(Default)]
-struct RankedProgress {
-    maps: HashMap<&'static str, u32>,
+struct RankedProgress<'a> {
+    surf: HashMap<&'a str, u32>,
+    bhop: HashMap<&'a str, u32>,
 }
 
-impl RankedProgress {
-    fn add(&mut self, map: &str, revision: &str, place: u64) {
-        let Some(entry) = catalog::find(map) else {
-            return;
-        };
+impl<'a> RankedProgress<'a> {
+    fn add(&mut self, entry: &'a catalog::CatalogEntry, revision: &str, place: u64) {
         let Some((version, board)) = revision.split_once(':') else {
             return;
-        };
-        let (geometry, profile) = PhysicsProfile::split_revision(board);
-        let previous = if entry.had_authored_contacts() {
-            PhysicsProfile::AuthoredContacts
-        } else {
-            PhysicsProfile::Legacy
         };
         if version
             .strip_prefix('v')
             .and_then(|version| version.parse().ok())
             != Some(replay::REPLAY_VERSION)
-            || catalog::revision(&entry.geometry) != Some(geometry)
-            || (profile != PhysicsProfile::Surfd && profile != previous)
         {
             return;
         }
+        if entry.source_bsp.is_some() {
+            if entry.native_board_revision().as_deref() != Some(board) {
+                return;
+            }
+        } else {
+            let (geometry, profile) = PhysicsProfile::split_revision(board);
+            let previous = if entry.had_authored_contacts() {
+                PhysicsProfile::AuthoredContacts
+            } else {
+                PhysicsProfile::Legacy
+            };
+            if catalog::revision(&entry.geometry) != Some(geometry)
+                || (profile != PhysicsProfile::Surfd && profile != previous)
+            {
+                return;
+            }
+        }
         let points = ranked_map_points(entry, place);
-        let best = self.maps.entry(&entry.id).or_default();
+        let maps = match entry.mode {
+            MapMode::Surf => &mut self.surf,
+            MapMode::Bhop => &mut self.bhop,
+        };
+        let best = maps.entry(&entry.id).or_default();
         *best = (*best).max(points);
     }
 
-    fn stats(&self) -> ProgressionStats {
-        let points = self.maps.values().sum();
+    fn stats(&self, mode: MapMode) -> ProgressionStats {
+        let maps = match mode {
+            MapMode::Surf => &self.surf,
+            MapMode::Bhop => &self.bhop,
+        };
+        let points = maps.values().sum();
         ProgressionStats {
             points,
-            completions: self.maps.len() as u16,
+            completions: maps.len() as u16,
             rank: ProgressionRank::from_points(points),
         }
     }
@@ -1902,7 +2022,11 @@ fn ranked_map_points(entry: &catalog::CatalogEntry, place: u64) -> u32 {
     multiplier * (100 + performance)
 }
 
-fn account_progression(db: &Connection, id: i64) -> Result<ProgressionStats> {
+fn account_progression(db: &Connection, id: i64, mode: MapMode) -> Result<ProgressionStats> {
+    Ok(account_ranked_progress(db, id)?.stats(mode))
+}
+
+fn account_ranked_progress(db: &Connection, id: i64) -> Result<RankedProgress<'static>> {
     let mut query = db.prepare(
         "SELECT b.map,b.revision,1 + (
              SELECT count(*) FROM best_runs faster
@@ -1913,16 +2037,18 @@ fn account_progression(db: &Connection, id: i64) -> Result<ProgressionStats> {
     let mut rows = query.query([id])?;
     let mut progress = RankedProgress::default();
     while let Some(row) = rows.next()? {
-        progress.add(
-            row.get_ref(0)?.as_str().map_err(internal)?,
-            row.get_ref(1)?.as_str().map_err(internal)?,
-            row.get(2)?,
-        );
+        if let Some(entry) = catalog::find(row.get_ref(0)?.as_str().map_err(internal)?) {
+            progress.add(
+                entry,
+                row.get_ref(1)?.as_str().map_err(internal)?,
+                row.get(2)?,
+            );
+        }
     }
-    Ok(progress.stats())
+    Ok(progress)
 }
 
-fn progression(db: &Connection, owner: Option<i64>) -> Result<Progression> {
+fn progression(db: &Connection, owner: Option<i64>, mode: MapMode) -> Result<Progression> {
     let mut query = db.prepare(
         "SELECT b.account,a.name,b.map,b.revision,
              rank() OVER (PARTITION BY b.map,b.revision ORDER BY b.time_us)
@@ -1931,6 +2057,11 @@ fn progression(db: &Connection, owner: Option<i64>) -> Result<Progression> {
     let mut rows = query.query([])?;
     let mut rankings = HashMap::new();
     while let Some(row) = rows.next()? {
+        let Some(entry) = catalog::find(row.get_ref(2)?.as_str().map_err(internal)?)
+            .filter(|entry| entry.mode == mode)
+        else {
+            continue;
+        };
         let account_id = row.get(0)?;
         let result = match rankings.entry(account_id) {
             std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
@@ -1939,7 +2070,7 @@ fn progression(db: &Connection, owner: Option<i64>) -> Result<Progression> {
             }
         };
         result.1.add(
-            row.get_ref(2)?.as_str().map_err(internal)?,
+            entry,
             row.get_ref(3)?.as_str().map_err(internal)?,
             row.get(4)?,
         );
@@ -1947,7 +2078,7 @@ fn progression(db: &Connection, owner: Option<i64>) -> Result<Progression> {
     let mut entries: Vec<_> = rankings
         .into_iter()
         .filter_map(|(account_id, (name, progress))| {
-            let stats = progress.stats();
+            let stats = progress.stats(mode);
             (stats.completions > 0).then_some(ProgressionRow {
                 account_id,
                 name,
@@ -1985,6 +2116,7 @@ fn progression(db: &Connection, owner: Option<i64>) -> Result<Progression> {
     let total = entries.len();
     entries.truncate(100);
     Ok(Progression {
+        mode,
         entries,
         total,
         own,
@@ -2277,6 +2409,7 @@ mod tests {
         let request = || RoomTicketRequest {
             room_id: "eu".into(),
             address: "LOCALHOST".into(),
+            mode: crate::catalog::MapMode::Surf,
         };
         let auth = {
             let db = service.db.lock().unwrap();
@@ -2349,27 +2482,32 @@ mod tests {
         assert!(replay_course_available(&entry.id, None, &current, None));
 
         let mut progress = RankedProgress::default();
-        progress.add(&entry.id, &old, 1);
-        assert_eq!(progress.stats().completions, 0);
-        progress.add(&entry.id, &contacts, 1);
-        progress.add(&entry.id, &current, 3);
-        assert_eq!(progress.stats().completions, 1);
-        assert_eq!(progress.stats().points, ranked_map_points(entry, 1));
+        progress.add(entry, &old, 1);
+        assert_eq!(progress.stats(MapMode::Surf).completions, 0);
+        progress.add(entry, &contacts, 1);
+        progress.add(entry, &current, 3);
+        assert_eq!(progress.stats(MapMode::Surf).completions, 1);
+        assert_eq!(
+            progress.stats(MapMode::Surf).points,
+            ranked_map_points(entry, 1)
+        );
     }
 
     #[test]
-    fn progression_counts_current_map_bests_ties_and_tier_two_weight() {
+    fn progression_keeps_surf_and_bhop_bests_and_xp_separate() {
         let service = service();
         let db = service.db.lock().unwrap();
         db.execute("INSERT INTO accounts(id,name,password) VALUES (1,'Alice',''),(2,'Bob',''),(3,'Chris','')", []).unwrap();
         let tier_one = catalog::entries()
             .iter()
-            .find(|entry| entry.tier == Some(1))
+            .find(|entry| entry.mode == MapMode::Surf && entry.tier == Some(1))
             .unwrap();
         let tier_two = catalog::entries()
             .iter()
-            .find(|entry| entry.tier == Some(2))
+            .find(|entry| entry.mode == MapMode::Surf && entry.tier == Some(2))
             .unwrap();
+        let bhop = catalog::find("bhop_easy").unwrap();
+        assert_eq!(bhop.mode, MapMode::Bhop);
         let revision = |entry: &catalog::CatalogEntry| {
             versioned_revision(&entry.native_board_revision().unwrap())
         };
@@ -2388,13 +2526,15 @@ mod tests {
                 0,
                 1000,
             ),
+            ("h", 3, &bhop.id, revision(bhop), 0, 600),
+            ("i", 1, &bhop.id, "v2:obsolete-source-board".into(), 0, 100),
         ] {
             db.execute(
                 "INSERT INTO best_runs(id,account,map,revision,bonus,time_us,splits,speeds,replay) VALUES (?1,?2,?3,?4,?5,?6,'[]','[]','{}')",
                 params![id, owner, map, revision, bonus, time],
             ).unwrap();
         }
-        let board = progression(&db, Some(3)).unwrap();
+        let board = progression(&db, Some(3), MapMode::Surf).unwrap();
         assert_eq!(board.total, 3);
         assert_eq!(
             board
@@ -2405,18 +2545,75 @@ mod tests {
             [1500, 500, 330]
         );
         assert_eq!(board.own.unwrap().stats.rank, ProgressionRank::Rookie);
-        assert_eq!(account_progression(&db, 1).unwrap().completions, 2);
-        assert_eq!(account_progression(&db, 2).unwrap().points, 500);
+        assert_eq!(
+            account_progression(&db, 1, MapMode::Surf)
+                .unwrap()
+                .completions,
+            2
+        );
+        assert_eq!(
+            account_progression(&db, 2, MapMode::Surf).unwrap().points,
+            500
+        );
+        let board = progression(&db, Some(1), MapMode::Bhop).unwrap();
+        assert_eq!(board.mode, MapMode::Bhop);
+        assert_eq!(board.total, 1);
+        assert_eq!(board.entries[0].account_id, 3);
+        assert_eq!(board.own.unwrap().stats.points, 0);
+        let profile = serde_json::to_value(profile(&db, 3).unwrap()).unwrap();
+        let bhop_points = ranked_map_points(bhop, 1);
+        assert_eq!(profile["points"], 330);
+        assert_eq!(profile["bhop_progression"]["points"], bhop_points);
+
+        let page = player_runs(&db, 3, PlayerRunSort::BestPlace, 0).unwrap();
+        let run = page.runs.iter().find(|run| run.map == bhop.id).unwrap();
+        assert!(run.replay_available && !run.archived);
+        assert_eq!(run.points, Some(bhop_points));
+    }
+
+    #[test]
+    fn source_bonus_history_requires_the_pinned_revision() {
+        let entry = catalog::find("bhop_easy").unwrap();
+        let source = entry.source_bsp.as_ref().unwrap();
+        let revision = versioned_revision(&source.bonus_board_revision(1).unwrap());
+        let pack = bonus_pack_revision(&entry.id).unwrap();
+        assert!(replay_course_available(
+            &entry.id,
+            Some(1),
+            &revision,
+            Some(pack)
+        ));
+        assert!(!replay_course_available(
+            &entry.id,
+            Some(1),
+            &revision,
+            Some("old")
+        ));
+        assert!(!replay_course_available(
+            &entry.id,
+            Some(2),
+            &revision,
+            Some(pack)
+        ));
     }
 
     fn finished_downline() -> replay::RunReplay {
+        finished_downline_with_aim(false)
+    }
+
+    fn finished_downline_with_aim(vary_aim: bool) -> replay::RunReplay {
         let course = Course::practice();
         let mut session = Session::new(&course);
-        for _ in 0..600 {
+        for tick in 0..600 {
             let position = session.player.position;
             let velocity = session.player.velocity;
             let mut input = MoveInput {
-                yaw: course.spawn_yaw,
+                yaw: course.spawn_yaw
+                    + if vary_aim {
+                        ((tick * tick) % 43) as f32 * 0.0002
+                    } else {
+                        0.0
+                    },
                 ..Default::default()
             };
             if position.z > -400.0 || position.z < -2100.0 {
@@ -2432,6 +2629,50 @@ mod tests {
         session
             .take_finished_replay(&course)
             .expect("a completed Downline replay")
+    }
+
+    #[test]
+    fn published_replay_ownership_survives_backfill_and_rejects_another_account() {
+        let service = service();
+        let [original, other] = {
+            let db = service.db.lock().unwrap();
+            db.execute_batch(
+                "INSERT INTO accounts(id,name,password) VALUES (1,'Original',''),(2,'Other','');",
+            )
+            .unwrap();
+            [1, 2].map(|owner| create_session(&db, owner).unwrap().token)
+        };
+        let replay = finished_downline_with_aim(true);
+        assert!(replay.has_distinct_aim_pattern());
+        let save = |auth: &str| {
+            let attempt = service
+                .issue(
+                    Some(auth),
+                    AttemptRequest {
+                        map: replay.map.clone(),
+                        bonus: replay.bonus,
+                    },
+                )
+                .unwrap();
+            service.submit(
+                Some(auth),
+                SubmitRun {
+                    attempt: attempt.token,
+                    replay: replay.clone(),
+                },
+            )
+        };
+        assert!(save(&original).unwrap().personal_best);
+        assert_eq!(save(&other).err().unwrap().status, 409);
+        {
+            let mut db = service.db.lock().unwrap();
+            db.execute("DELETE FROM ranked_replay_owners", []).unwrap();
+            index_ranked_replay_owners(&mut db).unwrap();
+            index_ranked_replay_owners(&mut db).unwrap();
+        }
+        assert_eq!(save(&other).err().unwrap().status, 409);
+        assert!(!save(&original).unwrap().personal_best);
+        assert_eq!(service.board("downline", None).unwrap().rows.len(), 1);
     }
 
     #[test]

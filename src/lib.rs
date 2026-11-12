@@ -2,9 +2,13 @@ pub mod bc_texture;
 mod brush_index;
 pub mod catalog;
 pub mod course;
+pub mod goldsrc_bsp;
+pub mod local_map;
 pub mod look;
 pub mod movement;
 pub mod network;
+pub mod quake3_bsp;
+pub mod quake_bsp;
 pub mod record_protocol;
 #[cfg(feature = "records-service")]
 pub mod record_service;

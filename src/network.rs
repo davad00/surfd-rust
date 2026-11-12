@@ -12,7 +12,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::movement::{CROUCH_EYE_HEIGHT, EYE_HEIGHT};
+use crate::{
+    catalog::MapMode,
+    movement::{CROUCH_EYE_HEIGHT, EYE_HEIGHT},
+};
 
 mod compact_snapshot;
 mod room_tickets;
@@ -50,6 +53,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(4);
 pub struct RoomInfo {
     pub name: String,
     pub map: String,
+    #[serde(default)]
+    pub mode: MapMode,
     pub players: usize,
     pub capacity: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -163,6 +168,12 @@ pub struct VoteInfo {
     pub map_remaining_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vote_remaining_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vote_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected: Option<u8>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub runoff: bool,
     pub rtv: usize,
     #[serde(default)]
     pub kind: VoteKind,
@@ -184,6 +195,10 @@ pub enum ClientMessage {
     Nominate(String),
     RockTheVote,
     Vote(String),
+    VoteFor {
+        vote_id: u64,
+        choice: u8,
+    },
     Extend,
     Spectate(Option<u64>),
     Report {
@@ -218,7 +233,7 @@ pub enum ServerEvent {
 }
 
 // Additive Join fields. Old servers ignore them and new servers default them
-// to false for old clients, which keep the original heartbeat and roster frames.
+// to false for old clients.
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
 pub(crate) struct RoomCapabilities {
     #[serde(default, skip_serializing_if = "is_false")]
@@ -227,12 +242,15 @@ pub(crate) struct RoomCapabilities {
     pub compact_snapshots: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub heartbeat_receipts: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub bhop_rooms: bool,
 }
 
 const CLIENT_CAPABILITIES: RoomCapabilities = RoomCapabilities {
     compressed_snapshots: true,
     compact_snapshots: true,
     heartbeat_receipts: true,
+    bhop_rooms: true,
 };
 
 #[derive(Serialize, Deserialize)]
@@ -1085,6 +1103,9 @@ mod tests {
         assert_eq!(room.map_remaining_ms, None);
         assert_eq!(vote.map_remaining_ms, None);
         assert_eq!(vote.vote_remaining_ms, None);
+        assert_eq!(vote.vote_id, None);
+        assert_eq!(vote.selected, None);
+        assert!(!vote.runoff);
         assert_eq!(map_time_label(Duration::from_millis(59_001)), "60s left");
         assert_eq!(map_time_label(Duration::from_millis(60_001)), "2 min left");
         assert_eq!(map_time_label(Duration::ZERO), "Changing map…");
@@ -1125,7 +1146,8 @@ mod tests {
                 capabilities: RoomCapabilities {
                     compressed_snapshots: false,
                     compact_snapshots: false,
-                    heartbeat_receipts: false
+                    heartbeat_receipts: false,
+                    bhop_rooms: false,
                 },
                 ..
             }
@@ -1136,7 +1158,8 @@ mod tests {
                 capabilities: RoomCapabilities {
                     compressed_snapshots: false,
                     compact_snapshots: false,
-                    heartbeat_receipts: false
+                    heartbeat_receipts: false,
+                    bhop_rooms: false,
                 },
                 ..
             }
@@ -1144,7 +1167,7 @@ mod tests {
         assert!(matches!(
             decode(br#"{"type":"join","data":{"version":1,"name":"Player","compressed_snapshots":true}}"#).unwrap(),
             Request::Join {
-                capabilities: RoomCapabilities { compressed_snapshots: true, compact_snapshots: false, heartbeat_receipts: false },
+                capabilities: RoomCapabilities { compressed_snapshots: true, compact_snapshots: false, heartbeat_receipts: false, bhop_rooms: false },
                 ..
             }
         ));
@@ -1188,6 +1211,7 @@ mod tests {
                             room: RoomInfo {
                                 name: "Test room".into(),
                                 map: "downline".into(),
+                                mode: MapMode::Surf,
                                 players: 1,
                                 capacity: 1,
                                 room_id: None,
@@ -1554,5 +1578,14 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn legacy_room_info_defaults_to_surf() {
+        let room: RoomInfo = serde_json::from_str(
+            r#"{"name":"Old room","map":"surf_kitsune","players":0,"capacity":16}"#,
+        )
+        .unwrap();
+        assert_eq!(room.mode, MapMode::Surf);
     }
 }

@@ -5,17 +5,27 @@
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
-use std::io::{Cursor, Read};
-use std::path::Path;
+use std::io::{BufReader, Cursor, Read};
+use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
-use bevy_math::{Quat, Vec3};
+use bevy_math::{DVec3, Quat, Vec3};
+use flate2::read::MultiGzDecoder;
 use lzma_rs::decompress::{Options, UnpackedSize};
+use sha2::{Digest, Sha256};
 
-use crate::course::{Brush, Course, Plane, Surface, SurfaceTexture, Zone, ZoneKind};
+use crate::catalog::{CatalogEntry, MapMode};
+use crate::course::{Brush, Course, Plane, Surface, SurfaceTexture, Zone};
 use crate::source_material::Materials;
 
+#[path = "source_bsp_entities.rs"]
+mod gameplay;
+#[path = "source_bsp_timer.rs"]
+mod timer;
+pub(crate) use timer::SourceTimer;
+
 #[path = "source_lightmap.rs"]
-mod lightmap;
+pub(crate) mod lightmap;
 use lightmap::{FaceLightmap, Lightmaps};
 
 const HEADER_SIZE: usize = 8 + 64 * 16 + 4;
@@ -46,26 +56,219 @@ const LIGHTING_HDR: usize = 53;
 const FACES_HDR: usize = 58;
 
 pub fn load(path: &Path) -> Result<Course, String> {
+    load_file(path, None, true)
+}
+
+pub fn load_ranked(path: &Path, entry: &CatalogEntry) -> Result<Course, String> {
+    load_file(path, Some(entry), true)
+}
+
+pub(crate) fn load_ranked_collision(path: &Path, entry: &CatalogEntry) -> Result<Course, String> {
+    load_file(path, Some(entry), false)
+}
+
+pub fn ranked_files_match(path: &Path, entry: &CatalogEntry) -> bool {
+    let Some(expected) = &entry.source_bsp else {
+        return false;
+    };
+    let Ok(bytes) = read_bsp_bytes(path) else {
+        return false;
+    };
+    timer::Sidecar::read(path, &bytes)
+        .ok()
+        .flatten()
+        .is_some_and(|timer| timer.verify_ranked(expected, entry.mode).is_ok())
+}
+
+pub fn map_name(path: &Path) -> Option<&str> {
+    let uncompressed = if is_gzip(path) {
+        Path::new(path.file_stem()?)
+    } else {
+        path
+    };
+    uncompressed
+        .extension()
+        .filter(|ext| ext.eq_ignore_ascii_case("bsp"))?;
+    uncompressed.file_stem()?.to_str()
+}
+
+pub fn sidecar_path(path: &Path, extension: &str) -> PathBuf {
+    if is_gzip(path) {
+        path.with_extension("").with_extension(extension)
+    } else {
+        path.with_extension(extension)
+    }
+}
+
+#[derive(Default, serde::Deserialize)]
+pub struct MapMetadata {
+    pub mode: Option<MapMode>,
+    pub tier: Option<u8>,
+    #[serde(skip)]
+    pub timed: bool,
+    #[serde(skip)]
+    pub(crate) timer_bsp_sha256: Option<String>,
+}
+
+pub fn map_metadata(path: &Path) -> MapMetadata {
+    let read = |extension| {
+        let file = File::open(sidecar_path(path, extension)).ok()?;
+        serde_json::from_reader::<_, MapMetadata>(BufReader::new(file.take(2 * 1024 * 1024))).ok()
+    };
+    let metadata = read("metadata.json").unwrap_or_default();
+    let timer = timer::Sidecar::inspect(path);
+    MapMetadata {
+        mode: timer.as_ref().map(|(mode, _, _)| *mode).or(metadata.mode),
+        tier: metadata
+            .tier
+            .or_else(|| timer.as_ref().and_then(|(_, tier, _)| *tier))
+            .filter(|tier| *tier > 0),
+        timed: timer.is_some(),
+        timer_bsp_sha256: timer.map(|(_, _, sha256)| sha256),
+    }
+}
+
+#[derive(PartialEq, serde::Deserialize, serde::Serialize)]
+struct BspVerification<'a> {
+    size: u64,
+    modified_ns: u128,
+    sha256: &'a str,
+}
+
+pub(crate) fn matches_timer_bsp(path: &Path, sha256: &str) -> bool {
+    let verify = || -> Option<bool> {
+        let file = File::open(path).ok()?;
+        let stamp = |file: &File| {
+            let info = file.metadata().ok()?;
+            Some(BspVerification {
+                size: info.len(),
+                modified_ns: info
+                    .modified()
+                    .ok()?
+                    .duration_since(UNIX_EPOCH)
+                    .ok()?
+                    .as_nanos(),
+                sha256,
+            })
+        };
+        let before = stamp(&file)?;
+        let mut cache_path = path.as_os_str().to_owned();
+        cache_path.push(".timer-check.json");
+        if let Ok(cache) = File::open(&cache_path) {
+            let mut text = String::new();
+            if cache.take(512).read_to_string(&mut text).is_ok()
+                && serde_json::from_str::<BspVerification>(&text).is_ok_and(|check| check == before)
+            {
+                return Some(true);
+            }
+        }
+        let mut digest = Sha256::new();
+        let mut bytes = 0_u64;
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut reader: Box<dyn Read> = if is_gzip(path) {
+            Box::new(MultiGzDecoder::new(&file))
+        } else {
+            Box::new(&file)
+        };
+        loop {
+            let count = reader.read(&mut buffer).ok()?;
+            if count == 0 {
+                break;
+            }
+            bytes += count as u64;
+            if bytes > MAX_FILE_SIZE {
+                return Some(false);
+            }
+            digest.update(&buffer[..count]);
+        }
+        let matched = format!("{:x}", digest.finalize()).eq_ignore_ascii_case(sha256)
+            && stamp(&file)? == before;
+        if matched && let Ok(cache) = serde_json::to_vec(&before) {
+            let _ = std::fs::write(cache_path, cache);
+        }
+        Some(matched)
+    };
+    verify().unwrap_or(false)
+}
+
+fn is_gzip(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("gz"))
+}
+
+pub(crate) fn read_bsp_bytes(path: &Path) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     File::open(path)
-        .and_then(|file| file.take(MAX_FILE_SIZE + 1).read_to_end(&mut bytes))
+        .and_then(|file| {
+            if is_gzip(path) {
+                MultiGzDecoder::new(file)
+                    .take(MAX_FILE_SIZE + 1)
+                    .read_to_end(&mut bytes)
+            } else {
+                file.take(MAX_FILE_SIZE + 1).read_to_end(&mut bytes)
+            }
+        })
         .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
     if bytes.len() as u64 > MAX_FILE_SIZE {
         return Err(format!("{} exceeds the 512 MiB BSP limit", path.display()));
     }
-    let name = path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("Source BSP");
-    parse(&bytes, name, Some(path)).map_err(|error| format!("{}: {error}", path.display()))
+    Ok(bytes)
 }
 
-fn parse(bytes: &[u8], name: &str, map_path: Option<&Path>) -> Result<Course, String> {
+fn load_file(
+    path: &Path,
+    ranked: Option<&CatalogEntry>,
+    load_visuals: bool,
+) -> Result<Course, String> {
+    let bytes = read_bsp_bytes(path)?;
+    let name = map_name(path).ok_or("Expected a .bsp or .bsp.gz map")?;
+    let result = (|| {
+        let timer = timer::Sidecar::read(path, &bytes)?;
+        let revision = if let Some(entry) = ranked {
+            if !entry.id.eq_ignore_ascii_case(name) {
+                return Err("Installed BSP filename differs from the ranked map name".into());
+            }
+            let source = entry.source_bsp.as_ref().ok_or("No ranked BSP revision")?;
+            timer
+                .as_ref()
+                .ok_or("Ranked BSP requires its pinned timer file")?
+                .verify_ranked(source, entry.mode)?;
+            Some(source.board_revision())
+        } else {
+            None
+        };
+        let mut course = parse(
+            &bytes,
+            ranked.map_or(name, |entry| &entry.id),
+            Some(path),
+            timer,
+            load_visuals,
+        )?;
+        course.catalog_revision = revision;
+        if course.map_triggers.source_timer.is_none() {
+            course.map_triggers.source_mode = map_metadata(path).mode;
+        }
+        Ok(course)
+    })();
+    result.map_err(|error: String| format!("{}: {error}", path.display()))
+}
+
+fn parse(
+    bytes: &[u8],
+    name: &str,
+    map_path: Option<&Path>,
+    timer: Option<timer::Sidecar>,
+    load_visuals: bool,
+) -> Result<Course, String> {
     let file = BspFile::new(bytes)?;
     let geometry = Geometry::read(&file)?;
-    let pak = file.lump(PAKFILE).unwrap_or_default();
-    let mut materials = Materials::new(&pak, map_path);
-    let lighting = file.lump(geometry.lighting).unwrap_or_default();
+    let pak = load_visuals
+        .then(|| file.lump(PAKFILE).unwrap_or_default())
+        .unwrap_or_default();
+    let mut materials = Materials::new(&pak, map_path.filter(|_| load_visuals));
+    let lighting = load_visuals
+        .then(|| file.lump(geometry.lighting).unwrap_or_default())
+        .unwrap_or_default();
     let mut lightmaps = Lightmaps::new(&lighting);
     let entity_lump = file.lump(ENTITIES)?;
     let entity_text = String::from_utf8_lossy(&entity_lump);
@@ -91,10 +294,14 @@ fn parse(bytes: &[u8], name: &str, map_path: Option<&Path>) -> Result<Course, St
         .first()
         .ok_or("The BSP has no world model")?;
     let mut brushes = geometry.model_brushes(world, Placement::IDENTITY, true)?;
-    let mut surfaces =
-        geometry.model_surfaces(world, Placement::IDENTITY, &mut materials, &mut lightmaps)?;
+    let mut surfaces = if load_visuals {
+        geometry.model_surfaces(world, Placement::IDENTITY, &mut materials, &mut lightmaps)?
+    } else {
+        Vec::new()
+    };
     let mut zones = Vec::new();
-    for entity in &entities {
+    let mut conveyors = Vec::new();
+    for (index, entity) in entities.iter().enumerate() {
         let Some(model_index) = entity.model_index().filter(|&index| index != 0) else {
             continue;
         };
@@ -103,9 +310,8 @@ fn parse(bytes: &[u8], name: &str, map_path: Option<&Path>) -> Result<Course, St
             continue;
         }
 
-        let class = entity.get("classname").unwrap_or_default();
         let placement = entity.placement();
-        if let Some(kind) = zone_kind(entity, &entities) {
+        if let Some(kind) = gameplay::trigger(entity, &entities, index, timer.is_some()) {
             zones.extend(
                 geometry
                     .model_brushes(model, placement, false)?
@@ -115,23 +321,27 @@ fn parse(bytes: &[u8], name: &str, map_path: Option<&Path>) -> Result<Course, St
                         kind: kind.clone(),
                     }),
             );
-        } else if matches!(
-            class,
-            "func_brush" | "func_wall" | "func_illusionary" | "func_lod"
+        } else if let Some(surface) = gameplay::brush_surface_kind(
+            entity,
+            timer.as_ref().is_some_and(timer::Sidecar::is_bhop),
         ) {
-            surfaces.extend(geometry.model_surfaces(
-                model,
-                placement,
-                &mut materials,
-                &mut lightmaps,
-            )?);
-            if class != "func_illusionary" && entity.get("solidity") != Some("1") {
+            if load_visuals {
+                surfaces.extend(geometry.model_surfaces(
+                    model,
+                    placement,
+                    &mut materials,
+                    &mut lightmaps,
+                )?);
+            }
+            if surface.solid {
+                let first = brushes.len();
                 brushes.extend(geometry.model_brushes(model, placement, true)?);
+                conveyors.extend(gameplay::conveyor(entity, first..brushes.len()));
             }
         }
     }
 
-    if brushes.is_empty() || surfaces.is_empty() {
+    if brushes.is_empty() || load_visuals && surfaces.is_empty() {
         return Err("The map has no supported static brush geometry".into());
     }
     let kill_y = brushes
@@ -141,7 +351,7 @@ fn parse(bytes: &[u8], name: &str, map_path: Option<&Path>) -> Result<Course, St
         - 2048.0;
     let mut textures = materials.into_textures();
     lightmaps.append(&mut textures, &mut surfaces);
-    Ok(Course {
+    let mut course = Course {
         name: name.to_owned(),
         spawn,
         spawn_yaw,
@@ -158,8 +368,16 @@ fn parse(bytes: &[u8], name: &str, map_path: Option<&Path>) -> Result<Course, St
         practice_spawns: Vec::new(),
         catalog_revision: None,
         bonus_routes: Vec::new(),
-        map_triggers: Default::default(),
-    })
+        map_triggers: crate::course::MapTriggers {
+            conveyors,
+            source_world_limit: (file.version() == 25).then_some(131_072.0),
+            ..Default::default()
+        },
+    };
+    if let Some(timer) = timer {
+        timer.apply(&mut course, &geometry, &entities)?;
+    }
+    Ok(course)
 }
 
 struct BspFile<'a> {
@@ -172,9 +390,9 @@ impl<'a> BspFile<'a> {
             return Err("Expected a Source 1 VBSP file".into());
         }
         let version = i32_at(bytes, 4);
-        if !matches!(version, 19..=21) {
+        if !matches!(version, 19..=21 | 25) {
             return Err(format!(
-                "Unsupported VBSP version {version}. Expected 19, 20 or 21"
+                "Unsupported VBSP version {version}. Expected 19, 20, 21 or Strata 25"
             ));
         }
         Ok(Self { bytes })
@@ -183,6 +401,14 @@ impl<'a> BspFile<'a> {
     fn entry(&self, index: usize) -> &[u8] {
         let start = 8 + index * 16;
         &self.bytes[start..start + 16]
+    }
+
+    fn lump_version(&self, index: usize) -> i32 {
+        i32_at(self.entry(index), 8)
+    }
+
+    fn version(&self) -> i32 {
+        i32_at(self.bytes, 4)
     }
 
     fn lump(&self, index: usize) -> Result<Cow<'a, [u8]>, String> {
@@ -265,8 +491,8 @@ struct Face {
     reversed: bool,
     first_edge: usize,
     edge_count: usize,
-    texture: i16,
-    displacement: i16,
+    texture: i32,
+    displacement: i32,
     lightmap: FaceLightmap,
 }
 
@@ -303,9 +529,12 @@ struct Geometry {
 impl Geometry {
     fn read(file: &BspFile<'_>) -> Result<Self, String> {
         let leaf = |row: &[u8]| [u16_at(row, 24), u16_at(row, 26)];
-        let leaves = match i32_at(file.entry(LEAVES), 8) {
+        let leaves = match file.lump_version(LEAVES) {
             0 => file.records::<56, _>(LEAVES, leaf)?,
             1 => file.records::<32, _>(LEAVES, leaf)?,
+            2 => file.records::<56, _>(LEAVES, |row| {
+                [u32_at(row, 44) as usize, u32_at(row, 48) as usize]
+            })?,
             version => return Err(format!("Unsupported Source leaf version {version}")),
         };
         let has_lump = |index| u32_at(file.entry(index), 4) != 0;
@@ -320,14 +549,63 @@ impl Geometry {
         let material_offsets = file
             .records::<4, _>(TEXDATA_STRING_TABLE, |row| u32_at(row, 0) as usize)
             .unwrap_or_default();
+        let children = |row: &[u8]| [i32_at(row, 4), i32_at(row, 8)];
+        let nodes = match file.lump_version(NODES) {
+            0 => file.records::<32, _>(NODES, children)?,
+            1 => file.records::<48, _>(NODES, children)?,
+            version => return Err(format!("Unsupported Source node version {version}")),
+        };
+        let leaf_brushes = match file.lump_version(LEAF_BRUSHES) {
+            0 => file.records::<2, _>(LEAF_BRUSHES, |row| u16_at(row, 0))?,
+            1 => file.records::<4, _>(LEAF_BRUSHES, |row| u32_at(row, 0) as usize)?,
+            version => return Err(format!("Unsupported Source leaf brush version {version}")),
+        };
+        let edges = match file.lump_version(EDGES) {
+            0 => file.records::<4, _>(EDGES, |row| [u16_at(row, 0), u16_at(row, 2)])?,
+            1 => file.records::<8, _>(EDGES, |row| {
+                [u32_at(row, 0) as usize, u32_at(row, 4) as usize]
+            })?,
+            version => return Err(format!("Unsupported Source edge version {version}")),
+        };
+        let sides = match file.lump_version(BRUSH_SIDES) {
+            0 => file.records::<8, _>(BRUSH_SIDES, |row| u16_at(row, 0))?,
+            1 => file.records::<16, _>(BRUSH_SIDES, |row| u32_at(row, 0) as usize)?,
+            version => return Err(format!("Unsupported Source brush side version {version}")),
+        };
+        let lightmap = |row: &[u8], offset| FaceLightmap {
+            offset: i32_at(row, offset),
+            mins: [i32_at(row, offset + 8), i32_at(row, offset + 12)],
+            extents: [i32_at(row, offset + 16), i32_at(row, offset + 20)],
+        };
+        let faces = match file.lump_version(faces_lump) {
+            0 | 1 => file.records::<56, _>(faces_lump, |row| Face {
+                plane: u16_at(row, 0),
+                reversed: row[2] != 0,
+                first_edge: u32_at(row, 4) as usize,
+                edge_count: u16_at(row, 8),
+                texture: i32::from(i16_at(row, 10)),
+                displacement: i32::from(i16_at(row, 12)),
+                lightmap: lightmap(row, 20),
+            })?,
+            2 => file.records::<72, _>(faces_lump, |row| Face {
+                plane: u32_at(row, 0) as usize,
+                reversed: row[4] != 0,
+                first_edge: u32_at(row, 8) as usize,
+                edge_count: u32_at(row, 12) as usize,
+                texture: i32_at(row, 16),
+                displacement: i32_at(row, 20),
+                lightmap: lightmap(row, 32),
+            })?,
+            version => return Err(format!("Unsupported Source face version {version}")),
+        };
         Ok(Self {
             planes: file.records::<20, _>(PLANES, |row| Plane {
                 normal: source_axes(vector_at(row, 0)),
                 distance: f32_at(row, 12),
             })?,
-            nodes: file.records::<32, _>(NODES, |row| [i32_at(row, 4), i32_at(row, 8)])?,
+            nodes,
             leaves,
-            leaf_brushes: file.records::<2, _>(LEAF_BRUSHES, |row| u16_at(row, 0))?,
+            leaf_brushes,
             models: file.records::<48, _>(MODELS, |row| Model {
                 root: i32_at(row, 36),
                 first_face: u32_at(row, 40) as usize,
@@ -338,23 +616,11 @@ impl Geometry {
                 side_count: u32_at(row, 4) as usize,
                 contents: i32_at(row, 8),
             })?,
-            sides: file.records::<8, _>(BRUSH_SIDES, |row| u16_at(row, 0))?,
+            sides,
             vertices: file.records::<12, _>(VERTICES, |row| source_axes(vector_at(row, 0)))?,
-            edges: file.records::<4, _>(EDGES, |row| [u16_at(row, 0), u16_at(row, 2)])?,
+            edges,
             face_edges: file.records::<4, _>(SURFEDGES, |row| i32_at(row, 0))?,
-            faces: file.records::<56, _>(faces_lump, |row| Face {
-                plane: u16_at(row, 0),
-                reversed: row[2] != 0,
-                first_edge: u32_at(row, 4) as usize,
-                edge_count: u16_at(row, 8),
-                texture: i16_at(row, 10),
-                displacement: i16_at(row, 12),
-                lightmap: FaceLightmap {
-                    offset: i32_at(row, 20),
-                    mins: [i32_at(row, 28), i32_at(row, 32)],
-                    extents: [i32_at(row, 36), i32_at(row, 40)],
-                },
-            })?,
+            faces,
             textures: file.records::<72, _>(TEXINFO, |row| TextureInfo {
                 axes: [0, 16].map(|offset| texture_axis(row, offset)),
                 light_axes: [32, 48].map(|offset| texture_axis(row, offset)),
@@ -577,7 +843,13 @@ fn brush_from_planes<'a>(
         });
     }
     if !min.is_finite() || !max.is_finite() || !min.cmple(max).all() {
-        return Err("BSP brush is missing valid axial bounds".into());
+        let (min, max) =
+            bounds_from_plane_intersections(&planes).ok_or("BSP brush is missing valid bounds")?;
+        return Ok(Brush {
+            planes: planes.into(),
+            min,
+            max,
+        });
     }
 
     let center = placement.point((min + max) * 0.5);
@@ -592,14 +864,56 @@ fn brush_from_planes<'a>(
     })
 }
 
-struct Entity<'a>(HashMap<String, &'a str>);
+pub(crate) fn convex_brush(planes: &[Plane]) -> Result<Brush, String> {
+    brush_from_planes(planes.iter().map(Ok), Placement::IDENTITY)
+}
+
+fn bounds_from_plane_intersections(planes: &[Plane]) -> Option<(Vec3, Vec3)> {
+    if !(4..=64).contains(&planes.len()) {
+        return None;
+    }
+    let planes: Vec<_> = planes
+        .iter()
+        .map(|plane| (plane.normal.as_dvec3(), f64::from(plane.distance)))
+        .collect();
+    let mut min = DVec3::splat(f64::INFINITY);
+    let mut max = DVec3::splat(f64::NEG_INFINITY);
+    for (i, &(a, da)) in planes.iter().enumerate() {
+        for (j, &(b, db)) in planes.iter().enumerate().skip(i + 1) {
+            for &(c, dc) in &planes[j + 1..] {
+                let bc = b.cross(c);
+                let determinant = a.dot(bc);
+                if determinant.abs() < 1e-8 {
+                    continue;
+                }
+                let point = (bc * da + c.cross(a) * db + a.cross(b) * dc) / determinant;
+                if planes
+                    .iter()
+                    .all(|&(normal, distance)| normal.dot(point) <= distance + 0.015625)
+                {
+                    min = min.min(point);
+                    max = max.max(point);
+                }
+            }
+        }
+    }
+    let min = min.as_vec3();
+    let max = max.as_vec3();
+    (min.is_finite() && max.is_finite() && min.cmple(max).all())
+        .then_some((min - Vec3::splat(0.03125), max + Vec3::splat(0.03125)))
+}
+
+pub(crate) struct Entity<'a> {
+    values: HashMap<String, &'a str>,
+    outputs: Vec<(&'a str, &'a str)>,
+}
 
 impl<'a> Entity<'a> {
-    fn get(&self, key: &str) -> Option<&'a str> {
-        self.0.get(key).copied()
+    pub(crate) fn get(&self, key: &str) -> Option<&'a str> {
+        self.values.get(key).copied()
     }
 
-    fn origin(&self) -> Option<Vec3> {
+    pub(crate) fn origin(&self) -> Option<Vec3> {
         parse_vector(self.get("origin")?).map(source_axes)
     }
 
@@ -615,11 +929,11 @@ impl<'a> Entity<'a> {
         Vec3::new(0.0, yaw, 0.0)
     }
 
-    fn yaw(&self) -> f32 {
+    pub(crate) fn yaw(&self) -> f32 {
         (self.angles().y.rem_euclid(360.0) - 90.0).to_radians()
     }
 
-    fn model_index(&self) -> Option<usize> {
+    pub(crate) fn model_index(&self) -> Option<usize> {
         self.get("model")?.strip_prefix('*')?.parse().ok()
     }
 
@@ -634,69 +948,30 @@ impl<'a> Entity<'a> {
     }
 }
 
-fn zone_kind(entity: &Entity<'_>, entities: &[Entity<'_>]) -> Option<ZoneKind> {
-    let class = entity.get("classname")?;
-    if !class.starts_with("trigger_") {
-        return None;
-    }
-    let name = entity
-        .get("targetname")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    match name.as_str() {
-        "surf_start" | "map_start" => return Some(ZoneKind::Start),
-        "surf_finish" | "surf_end" | "map_end" => return Some(ZoneKind::Finish),
-        _ => {}
-    }
-    if let Some(index) = name
-        .strip_prefix("surf_checkpoint_")
-        .and_then(|value| value.parse().ok())
-    {
-        return Some(ZoneKind::Checkpoint(index));
-    }
-    if class == "trigger_hurt" && entity.get("damage")?.parse::<f32>().ok()? >= 100.0 {
-        return Some(ZoneKind::Reset);
-    }
-    if class != "trigger_teleport"
-        || entity.get("landmark").is_some_and(|name| !name.is_empty())
-        || entity
-            .get("filtername")
-            .is_some_and(|name| !name.is_empty())
-    {
-        return None;
-    }
-    let target = entity.get("target")?;
-    let destination = entities.iter().find(|entity| {
-        entity
-            .get("targetname")
-            .is_some_and(|name| name.eq_ignore_ascii_case(target))
-    })?;
-    let flags = entity
-        .get("spawnflags")
-        .and_then(|value| value.parse::<u32>().ok())
-        .unwrap_or_default();
-    Some(ZoneKind::Teleport {
-        position: destination.origin()?,
-        yaw: (flags & 0x20 == 0).then(|| destination.yaw()),
-    })
-}
-
-fn read_entities(mut text: &str) -> Result<Vec<Entity<'_>>, String> {
+pub(crate) fn read_entities(mut text: &str) -> Result<Vec<Entity<'_>>, String> {
     let mut entities = Vec::new();
     while let Some(token) = next_token(&mut text)? {
         if token != "{" {
             return Err("Expected a new entity in the BSP entity lump".into());
         }
         let mut entity = HashMap::new();
+        let mut outputs = Vec::new();
         loop {
             let key = next_token(&mut text)?.ok_or("BSP entity ended before its closing brace")?;
             if key == "}" {
                 break;
             }
             let value = next_token(&mut text)?.ok_or("Missing BSP entity value")?;
-            entity.insert(key.to_ascii_lowercase(), value);
+            let lower = key.to_ascii_lowercase();
+            if lower.starts_with("on") {
+                outputs.push((key, value));
+            }
+            entity.insert(lower, value);
         }
-        entities.push(Entity(entity));
+        entities.push(Entity {
+            values: entity,
+            outputs,
+        });
     }
     Ok(entities)
 }
@@ -738,7 +1013,7 @@ fn parse_vector(value: &str) -> Option<Vec3> {
     (vector.is_finite() && parts.next().is_none()).then_some(vector)
 }
 
-fn source_axes(vector: Vec3) -> Vec3 {
+pub(crate) fn source_axes(vector: Vec3) -> Vec3 {
     Vec3::new(vector.x, vector.z, -vector.y)
 }
 
@@ -788,10 +1063,36 @@ fn vector_at(bytes: &[u8], offset: usize) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::course::ZoneKind;
+
+    #[test]
+    fn derives_bounds_when_a_brush_has_no_axial_bevels() {
+        let planes = [
+            Plane {
+                normal: Vec3::NEG_X,
+                distance: 0.0,
+            },
+            Plane {
+                normal: Vec3::NEG_Y,
+                distance: 0.0,
+            },
+            Plane {
+                normal: Vec3::NEG_Z,
+                distance: 0.0,
+            },
+            Plane {
+                normal: Vec3::ONE.normalize(),
+                distance: 1.0 / 3.0_f32.sqrt(),
+            },
+        ];
+        let brush = brush_from_planes(planes.iter().map(Ok), Placement::IDENTITY).unwrap();
+        assert!(brush.min.distance(Vec3::splat(-0.03125)) < 0.00001);
+        assert!(brush.max.distance(Vec3::splat(1.03125)) < 0.00001);
+    }
 
     #[test]
     fn source_brushes_faces_and_teleports_share_the_same_axes() {
-        let course = parse(&fixture(), "fixture", None).unwrap();
+        let course = parse(&fixture(), "fixture", None, None, true).unwrap();
         assert_eq!(course.spawn, Vec3::new(15.0, 35.0, -25.0));
         assert_eq!(course.spawn_yaw, 0.0);
         assert_eq!(course.brushes.len(), 1);
@@ -818,7 +1119,7 @@ mod tests {
         let mut bytes = fixture();
         let entry = 8 + PLANES * 16;
         put(&mut bytes, entry, u32::MAX.to_le_bytes());
-        let error = parse(&bytes, "truncated", None).err().unwrap();
+        let error = parse(&bytes, "truncated", None, None, true).err().unwrap();
         assert!(error.contains("invalid range"));
     }
 

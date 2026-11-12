@@ -1,20 +1,25 @@
+use std::time::Instant;
+
 use bevy::{
     ecs::hierarchy::ChildSpawnerCommands,
+    math::Rot2,
     picking::{Pickable, events::PointerClick, pointer::PointerButton},
     prelude::*,
+    ui::UiTransform,
 };
 
 use crate::{
     menu::Label,
     online::{
-        Action, Field, Online, OnlinePage, RoomAvailability, RunSplits, SURFD_HISTORY_PAGE_SIZE,
+        Action, Field, NUMBERED_VOTE_CHOICES, Online, OnlinePage, RoomAvailability, RunSplits,
+        SURFD_HISTORY_PAGE_SIZE,
     },
 };
 use bevy_surf::{
-    catalog,
+    catalog::{self, MapMode},
     network::{
-        CONTINUE_MAP, EXTEND_MAP, MAP_VOTE_CHOICES, ROOM_REPORT_PAGE_SIZE, RoomModeration,
-        VoteKind, map_time_label,
+        CONTINUE_MAP, EXTEND_MAP, ROOM_REPORT_PAGE_SIZE, RoomModeration, VoteInfo, VoteKind,
+        map_time_label,
     },
     record_protocol::{OAuthProvider, PLAYER_RUNS_PAGE_SIZE, PlayerRunSort, Playtime, Profile},
     social_protocol::{
@@ -29,9 +34,19 @@ const ACCENT: Color = Color::srgb(0.52, 0.96, 0.73);
 const PANEL: Color = Color::srgba(0.08, 0.11, 0.13, 0.93);
 const BUTTON: Color = Color::srgb(0.13, 0.19, 0.21);
 const EDGE: Color = Color::srgb(0.21, 0.29, 0.31);
+const VOTE_SELECTED: Color = Color::srgb(0.15, 0.27, 0.23);
+const VOTE_KEY_BACKGROUND: Color = Color::srgb(0.08, 0.11, 0.13);
+const VOTE_SHARE: Color = Color::srgba(0.52, 0.96, 0.73, 0.5);
 
 #[derive(Component)]
 struct OnlineButton(Action);
+
+pub(crate) fn bind_action(entity: &mut EntityCommands, action: Action) {
+    entity.insert(OnlineButton(action)).observe(click);
+}
+
+#[derive(Component)]
+pub(crate) struct VotePanel;
 
 pub fn panel(
     parent: &mut ChildSpawnerCommands,
@@ -45,7 +60,6 @@ pub fn panel(
         OnlinePage::Records => records(parent, online, course_name),
         OnlinePage::Profile => profile(parent, online),
         OnlinePage::Friends => friends(parent, online),
-        OnlinePage::Store => store(parent, online),
         OnlinePage::Moderation => moderation(parent, online),
     }
 }
@@ -61,7 +75,12 @@ fn servers(parent: &mut ChildSpawnerCommands, online: &Online) {
     if let Some(room) = &online.room {
         horizontal(parent, |row| {
             row.spawn(label(
-                format!("Connected to {} · {}", room.name, room.map),
+                format!(
+                    "Connected to {} · {} · {}",
+                    room.name,
+                    room.mode.label(),
+                    map_title(&room.map)
+                ),
                 16.,
                 ACCENT,
             ));
@@ -79,38 +98,51 @@ fn servers(parent: &mut ChildSpawnerCommands, online: &Online) {
             MUTED,
         ));
     }
-    for server in &online.servers {
-        match &server.availability {
-            RoomAvailability::Online { info, ping_ms } => {
-                let mut title = format!(
-                    "{}   ·   {}   ·   {}/{} players   ·   {} ms",
-                    info.name,
-                    map_title(&info.map),
-                    info.players,
-                    info.capacity,
-                    ping_ms
-                );
-                if let Some(ms) = info.map_remaining_ms {
-                    title.push_str("   ·   ");
-                    title.push_str(&map_time_label(std::time::Duration::from_millis(ms)));
+    for mode in [catalog::MapMode::Surf, catalog::MapMode::Bhop] {
+        let mut rooms = online
+            .servers
+            .iter()
+            .filter_map(|server| match &server.availability {
+                RoomAvailability::Online { info, ping_ms } if info.mode == mode => {
+                    Some((server, info, ping_ms))
                 }
-                line(parent, |row| {
-                    flexible(row, title, 16.);
-                    button(
-                        row,
-                        "Join",
-                        Action::JoinAddress(server.address.clone()),
-                        true,
-                    );
-                });
+                _ => None,
+            })
+            .peekable();
+        if rooms.peek().is_some() {
+            parent.spawn(label(format!("{} rooms", mode.label()), 16., ACCENT));
+        }
+        for (server, info, ping_ms) in rooms {
+            let mut title = format!(
+                "{}   ·   {}   ·   {}/{} players   ·   {} ms",
+                info.name,
+                map_title(&info.map),
+                info.players,
+                info.capacity,
+                ping_ms
+            );
+            if let Some(ms) = info.map_remaining_ms {
+                title.push_str("   ·   ");
+                title.push_str(&map_time_label(std::time::Duration::from_millis(ms)));
             }
-            RoomAvailability::Unavailable { last_name } => {
-                let title = last_name.as_ref().map_or_else(
-                    || format!("{}   ·   Unavailable", server.address),
-                    |name| format!("{name}   ·   {}   ·   Unavailable", server.address),
+            line(parent, |row| {
+                flexible(row, title, 16.);
+                button(
+                    row,
+                    "Join",
+                    Action::JoinAddress(server.address.clone()),
+                    true,
                 );
-                line(parent, |row| flexible(row, title, 16.));
-            }
+            });
+        }
+    }
+    for server in &online.servers {
+        if let RoomAvailability::Unavailable { last_name } = &server.availability {
+            let title = last_name.as_ref().map_or_else(
+                || format!("{}   ·   Unavailable", server.address),
+                |name| format!("{name}   ·   {}   ·   Unavailable", server.address),
+            );
+            line(parent, |row| flexible(row, title, 16.));
         }
     }
 }
@@ -128,7 +160,8 @@ fn players(parent: &mut ChildSpawnerCommands, online: &Online) {
         parent,
         &room.name,
         &format!(
-            "{} · {}/{} players",
+            "{} · {} · {}/{} players",
+            room.mode.label(),
             map_title(&room.map),
             online.players.len(),
             room.capacity
@@ -138,7 +171,7 @@ fn players(parent: &mut ChildSpawnerCommands, online: &Online) {
         parent.spawn((label("", 14., MUTED), Label::RoomMapClock));
     }
     horizontal(parent, |row| {
-        button(row, "Return to surf", Action::Spectate(None), false);
+        button(row, "Return to play", Action::Spectate(None), false);
         if !online.managed_guest() {
             button(row, "RTV", Action::RockTheVote, false);
             field(row, online, Field::Nomination, "Map to nominate", 210.);
@@ -153,34 +186,20 @@ fn players(parent: &mut ChildSpawnerCommands, online: &Online) {
         }
         button(row, "Leave", Action::Leave, false);
     });
-    if let Some(vote) = &online.vote {
-        if vote.open {
-            horizontal(parent, |row| {
-                row.spawn((label("", 15., ACCENT), Label::RoomVoteClock));
-                for (index, map) in vote.maps.iter().take(MAP_VOTE_CHOICES).enumerate() {
-                    let option = format!(
-                        "{}. {} · {}",
-                        index + 1,
-                        vote_choice_title(map),
-                        vote.votes.get(map).copied().unwrap_or_default()
-                    );
-                    if online.managed_guest() {
-                        row.spawn(label(option, 14., MUTED));
-                    } else {
-                        button(row, &option, Action::Vote(map.clone()), false);
-                    }
-                }
-                if room.room_id.is_none() {
-                    button(row, "Extend", Action::Extend, false);
-                }
-            });
-        } else if vote.rtv > 0 {
-            parent.spawn(label(
-                format!("RTV {}/{}", vote.rtv, vote.needed),
-                14.,
-                MUTED,
-            ));
-        }
+    vote_panel(parent, online, Instant::now(), 1., false);
+    if room.room_id.is_none() && online.active_vote(Instant::now()).is_some() {
+        button(parent, "Extend", Action::Extend, false);
+    }
+    if let Some(vote) = online
+        .vote
+        .as_ref()
+        .filter(|vote| !vote.open && vote.rtv > 0)
+    {
+        parent.spawn(label(
+            format!("RTV {}/{}", vote.rtv, vote.needed),
+            14.,
+            MUTED,
+        ));
     }
     for player in online.players.iter().take(7) {
         line(parent, |row| {
@@ -199,7 +218,15 @@ fn players(parent: &mut ChildSpawnerCommands, online: &Online) {
                     row.spawn(label("Guest", 13., MUTED));
                 }
                 if let Some(account) = identity.account_id {
-                    row.spawn(label(identity.rank.label(), 13., MUTED));
+                    row.spawn(label(
+                        format!(
+                            "{} · {} XP",
+                            identity.rank.label_for(room.mode),
+                            identity.points
+                        ),
+                        13.,
+                        MUTED,
+                    ));
                     button(row, "Profile", Action::ViewProfile(account), false);
                 }
             }
@@ -237,19 +264,206 @@ fn players(parent: &mut ChildSpawnerCommands, online: &Online) {
     });
 }
 
-pub(crate) fn vote_choice_title(map: &str) -> &str {
-    match map {
-        EXTEND_MAP => "Yes",
-        CONTINUE_MAP => "No",
-        name => map_title(name),
+pub(crate) fn vote_panel(
+    parent: &mut ChildSpawnerCommands,
+    online: &Online,
+    now: Instant,
+    scale: f32,
+    in_game: bool,
+) {
+    let Some((vote, seconds)) = online
+        .active_vote(now)
+        .filter(|(vote, _)| !vote.maps.is_empty())
+    else {
+        return;
+    };
+    let choices = vote.maps.iter().take(NUMBERED_VOTE_CHOICES);
+    let total = choices.clone().fold(0_usize, |sum, map| {
+        sum.saturating_add(vote.votes.get(map).copied().unwrap_or_default())
+    });
+    let selected = online.selected_vote_choice(vote);
+    let guest = online.managed_guest();
+    // A live player's mouse is grabbed. Number keys stay available while moving.
+    let can_click = !in_game || (online.spectating.is_some() && !online.is_typing());
+    let mut panel = Node {
+        width: px(316. * scale),
+        max_width: percent(90),
+        border: UiRect::all(px(1.)),
+        padding: UiRect::all(px(5. * scale)),
+        row_gap: px(4. * scale),
+        flex_direction: FlexDirection::Column,
+        ..default()
+    };
+    if in_game {
+        panel.position_type = PositionType::Absolute;
+        panel.top = px(120.);
+        panel.left = px(22.);
+    }
+    parent
+        .spawn((
+            VotePanel,
+            panel,
+            BackgroundColor(PANEL),
+            BorderColor::all(EDGE),
+            Pickable::IGNORE,
+        ))
+        .with_children(|panel| {
+            panel
+                .spawn((
+                    Node {
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::SpaceBetween,
+                        column_gap: px(6. * scale),
+                        padding: UiRect::axes(px(7. * scale), px(4. * scale)),
+                        ..default()
+                    },
+                    BackgroundColor(BUTTON),
+                    Pickable::IGNORE,
+                ))
+                .with_children(|header| {
+                    header.spawn((label(vote_title(vote), 13. * scale, TEXT), Pickable::IGNORE));
+                    header.spawn((
+                        label(format!("{seconds}s"), 12. * scale, ACCENT),
+                        Label::RoomVoteClock,
+                        Pickable::IGNORE,
+                    ));
+                });
+            for (index, map) in choices.enumerate() {
+                let number = index as u8 + 1;
+                let count = vote.votes.get(map).copied().unwrap_or_default();
+                let chosen = selected == Some(number);
+                let action = if can_click {
+                    online.vote_action(number, now)
+                } else {
+                    None
+                };
+                let mut row = panel.spawn((
+                    Node {
+                        min_height: px(38. * scale),
+                        padding: UiRect::all(px(7. * scale)),
+                        border: UiRect::all(px(1.)),
+                        align_items: AlignItems::Center,
+                        column_gap: px(7. * scale),
+                        ..default()
+                    },
+                    BackgroundColor(if chosen { VOTE_SELECTED } else { BUTTON }),
+                    BorderColor::all(if chosen { ACCENT } else { EDGE }),
+                ));
+                if let Some(action) = action {
+                    row.insert(OnlineButton(action)).observe(click);
+                } else {
+                    row.insert(Pickable::IGNORE);
+                }
+                row.with_children(|row| {
+                    row.spawn((
+                        Node {
+                            padding: UiRect::axes(px(5. * scale), px(2. * scale)),
+                            border: UiRect::all(px(1.)),
+                            ..default()
+                        },
+                        BackgroundColor(VOTE_KEY_BACKGROUND),
+                        BorderColor::all(EDGE),
+                        Pickable::IGNORE,
+                    ))
+                    .with_child((
+                        label(number.to_string(), 12. * scale, ACCENT),
+                        Pickable::IGNORE,
+                    ));
+                    if let Some(tier) = catalog::find(map).and_then(|entry| entry.tier) {
+                        row.spawn((
+                            label(format!("T{tier}"), 10. * scale, ACCENT),
+                            Pickable::IGNORE,
+                        ));
+                    }
+                    row.spawn((
+                        Node {
+                            flex_grow: 1.,
+                            min_width: px(0.),
+                            ..default()
+                        },
+                        label(
+                            vote_choice_title(map, vote.kind),
+                            11. * scale,
+                            if chosen { ACCENT } else { TEXT },
+                        ),
+                        Pickable::IGNORE,
+                    ));
+                    if chosen {
+                        row.spawn((
+                            Node {
+                                width: px(4. * scale),
+                                height: px(8. * scale),
+                                border: UiRect {
+                                    right: px(1.5 * scale),
+                                    bottom: px(1.5 * scale),
+                                    ..default()
+                                },
+                                ..default()
+                            },
+                            UiTransform::from_rotation(Rot2::radians(std::f32::consts::FRAC_PI_4)),
+                            BorderColor::all(ACCENT),
+                            Pickable::IGNORE,
+                        ));
+                    }
+                    let votes = if count == 1 { "vote" } else { "votes" };
+                    row.spawn((
+                        label(
+                            format!("{count} {votes}"),
+                            10. * scale,
+                            if chosen { ACCENT } else { MUTED },
+                        ),
+                        Pickable::IGNORE,
+                    ));
+                    if count > 0 {
+                        row.spawn((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                bottom: px(0.),
+                                left: px(0.),
+                                width: percent(100. * (count as f32 / total as f32)),
+                                height: px(2. * scale),
+                                ..default()
+                            },
+                            BackgroundColor(VOTE_SHARE),
+                            Pickable::IGNORE,
+                        ));
+                    }
+                });
+            }
+            panel.spawn((
+                Node {
+                    margin: UiRect::axes(px(7. * scale), px(2. * scale)),
+                    ..default()
+                },
+                label(
+                    if guest {
+                        "Sign in to vote."
+                    } else {
+                        "Press a number to vote. Keep surfing."
+                    },
+                    10. * scale,
+                    MUTED,
+                ),
+                Pickable::IGNORE,
+            ));
+        });
+}
+
+fn vote_choice_title(map: &str, kind: VoteKind) -> &str {
+    match (kind, map) {
+        (VoteKind::Extend, EXTEND_MAP) => "Yes",
+        (VoteKind::Extend, CONTINUE_MAP) => "No",
+        (_, EXTEND_MAP) => "Extend by 15 minutes",
+        (_, CONTINUE_MAP) => "Continue current map",
+        (_, name) => map_title(name),
     }
 }
 
-pub(crate) fn vote_title(kind: VoteKind) -> &'static str {
-    if kind == VoteKind::Extend {
-        "Extend map by 15 minutes?"
-    } else {
-        "Map vote"
+fn vote_title(vote: &VoteInfo) -> &'static str {
+    match vote.kind {
+        VoteKind::Extend => "Extend map by 15 minutes?",
+        VoteKind::Map if vote.runoff => "Map vote · final choice",
+        VoteKind::Map => "Next map",
     }
 }
 
@@ -274,12 +488,14 @@ fn records(parent: &mut ChildSpawnerCommands, online: &Online, course_name: &str
             );
         }
         button(row, "Save eligible run", Action::Submit, false);
-        button(
-            row,
-            "Player rankings",
-            Action::Progression,
-            online.show_progression,
-        );
+        for mode in [MapMode::Surf, MapMode::Bhop] {
+            button(
+                row,
+                &format!("{} rankings", mode.label()),
+                Action::Progression(mode),
+                online.show_progression && online.progression_mode == mode,
+            );
+        }
     });
     if !online.record_status.is_empty() {
         parent.spawn(label(&online.record_status, 14., ACCENT));
@@ -289,8 +505,9 @@ fn records(parent: &mut ChildSpawnerCommands, online: &Online, course_name: &str
             if let Some(own) = &progression.own {
                 parent.spawn(label(
                     format!(
-                        "Your rank · {} · {} points",
-                        own.stats.rank.label(),
+                        "Your {} rank · {} · {} XP",
+                        progression.mode.label(),
+                        own.stats.rank.label_for(progression.mode),
                         own.stats.points
                     ),
                     14.,
@@ -311,8 +528,8 @@ fn records(parent: &mut ChildSpawnerCommands, online: &Online, course_name: &str
                     flexible(row, format!("{:02}    {}", index + 1, player.name), 16.);
                     row.spawn(label(
                         format!(
-                            "{} · {} pts",
-                            player.stats.rank.label(),
+                            "{} · {} XP",
+                            player.stats.rank.label_for(progression.mode),
                             player.stats.points
                         ),
                         14.,
@@ -454,7 +671,7 @@ fn profile(parent: &mut ChildSpawnerCommands, online: &Online) {
         });
     } else if let Some(profile) = &online.profile {
         parent.spawn(label(&profile.name, 24., ACCENT));
-        parent.spawn(label(profile_rank(profile), 15., ACCENT));
+        profile_ranks(parent, profile);
         horizontal(parent, |row| {
             button(
                 row,
@@ -807,7 +1024,8 @@ fn profile_runs(parent: &mut ChildSpawnerCommands, online: &Online) {
                         row.spawn(label(format!("#{place}"), 14., TEXT));
                     }
                     if let Some(points) = run.points {
-                        row.spawn(label(format!("{points} pts"), 14., MUTED));
+                        let mode = MapMode::from_map_name(&run.map);
+                        row.spawn(label(format!("{} · {points} XP", mode.label()), 14., MUTED));
                     }
                     if let Some(date) = run
                         .created_at
@@ -886,7 +1104,7 @@ fn profile_runs(parent: &mut ChildSpawnerCommands, online: &Online) {
 }
 
 fn profile_details(parent: &mut ChildSpawnerCommands, profile: &Profile) {
-    parent.spawn(label(profile_rank(profile), 15., ACCENT));
+    profile_ranks(parent, profile);
     for detail in [&profile.title, &profile.motto]
         .into_iter()
         .filter(|detail| !detail.is_empty())
@@ -905,13 +1123,23 @@ fn profile_details(parent: &mut ChildSpawnerCommands, profile: &Profile) {
     }
 }
 
-fn profile_rank(profile: &Profile) -> String {
-    format!(
-        "{} · {} points · {} completed maps",
-        profile.progression.rank.label(),
-        profile.progression.points,
-        profile.progression.completions
-    )
+fn profile_ranks(parent: &mut ChildSpawnerCommands, profile: &Profile) {
+    for (mode, stats) in [
+        (MapMode::Surf, profile.progression),
+        (MapMode::Bhop, profile.bhop_progression),
+    ] {
+        parent.spawn(label(
+            format!(
+                "{} · {} · {} XP · {} completed maps",
+                mode.label(),
+                stats.rank.label_for(mode),
+                stats.points,
+                stats.completions
+            ),
+            15.,
+            ACCENT,
+        ));
+    }
 }
 
 fn map_title(map: &str) -> &str {
@@ -1234,25 +1462,6 @@ fn message_reports(parent: &mut ChildSpawnerCommands, online: &Online, page: &Me
     }
 }
 
-fn store(parent: &mut ChildSpawnerCommands, online: &Online) {
-    heading(parent, "Store", "Cosmetics and support");
-    if let Some(profile) = &online.profile {
-        parent.spawn(label(
-            format!(
-                "Current title · {}",
-                if profile.title.is_empty() {
-                    "Default"
-                } else {
-                    &profile.title
-                }
-            ),
-            17.,
-            TEXT,
-        ));
-    }
-    parent.spawn(label("Cosmetic previews are coming soon.", 15., MUTED));
-}
-
 fn moderation(parent: &mut ChildSpawnerCommands, online: &Online) {
     let moderator = online
         .room_identity()
@@ -1373,7 +1582,7 @@ fn time(micros: u64) -> String {
     )
 }
 
-fn surfd_time(micros: u64) -> String {
+pub(crate) fn surfd_time(micros: u64) -> String {
     // Surfd's public timer rounds to the nearest millisecond.
     let millis = micros / 1000 + u64::from(micros % 1000 >= 500);
     format!(

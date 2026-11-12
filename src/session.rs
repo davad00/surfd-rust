@@ -99,6 +99,7 @@ struct StageHandoff {
 struct TriggerState {
     tick: u64,
     stage: u16,
+    practice_stage: Option<u16>,
     pending_stage: Option<StageHandoff>,
     last_map_teleport: Option<u64>,
     base_velocity: Option<Vec3>,
@@ -114,6 +115,8 @@ struct TriggerState {
     jump_disabled: bool,
     pending_outputs: Vec<(u64, PlayerOutputValue)>,
     stage_start_recovery: bool,
+    teleport_movement_lock: bool,
+    imported_start_armed: bool,
 }
 
 impl TriggerState {
@@ -138,6 +141,7 @@ pub struct Session {
     stage_clock: StageClock,
     stage_checkpoint_handoffs: Vec<bool>,
     checkpoint_order: Vec<u16>,
+    unordered_checkpoints: Vec<u16>,
     initial_phase: RunPhase,
     last_teleport: Option<usize>,
     practice: Option<PracticeSpawn>,
@@ -194,6 +198,7 @@ impl Session {
             stage_clock: StageClock::default(),
             stage_checkpoint_handoffs: Vec::new(),
             checkpoint_order: Vec::new(),
+            unordered_checkpoints: Vec::new(),
             initial_phase: RunPhase::Untimed,
             last_teleport: None,
             practice: None,
@@ -314,6 +319,22 @@ impl Session {
         self.checkpoint_order.len()
     }
 
+    pub fn stage_count(&self, course: &Course) -> Option<usize> {
+        let total = course.map_triggers.authored_stage_starts.len();
+        (self.bonus.is_none() && total > 1).then_some(total)
+    }
+
+    /// The stage the player has entered on the current authored route.
+    pub fn stage_progress(&self, course: &Course) -> Option<(usize, usize)> {
+        let total = self.stage_count(course)?;
+        let stage = if self.practice.is_some() {
+            self.triggers.practice_stage?
+        } else {
+            self.triggers.stage
+        };
+        Some((usize::from(stage).clamp(1, total), total))
+    }
+
     /// Independent stage times for a completed staged route.
     pub fn verified_stages(&self) -> &[StageResult] {
         if self.phase == RunPhase::Finished
@@ -404,6 +425,10 @@ impl Session {
         if self.phase == RunPhase::Finished || !yaw.is_finite() || !pitch.is_finite() {
             return false;
         }
+        let mut triggers = self.triggers.clone();
+        if self.practice.is_none() {
+            triggers.practice_stage = Some(triggers.stage);
+        }
         self.saved = Some(SavedPose {
             player: self.player,
             yaw,
@@ -411,7 +436,7 @@ impl Session {
             source_yaw_degrees: source_yaw_degrees.filter(|yaw| yaw.abs() <= 360.0),
             bonus: self.bonus,
             options: self.options,
-            triggers: self.triggers.clone(),
+            triggers,
         });
         true
     }
@@ -526,11 +551,34 @@ impl Session {
         self.ranked_valid = true;
         self.recording_overflow = false;
         self.triggers = TriggerState::at_start();
+        if self.practice.is_some() {
+            self.triggers.practice_stage = self.practice_spawn_stage(course);
+        }
         self.pitch_override = Some(self.spawn_pitch(course));
         self.source_yaw_override = Some(self.spawn_source_yaw(course));
         if let Some(commands) = &mut self.commands {
             commands.clear();
         }
+    }
+
+    fn practice_spawn_stage(&self, course: &Course) -> Option<u16> {
+        self.stage_count(course)?;
+        let map = &course.map_triggers;
+        let position = self.player.position;
+        let hull = TriggerHull::for_player(&self.player, self.uses_precise_triggers(course));
+        let index = map
+            .authored_stage_spawns
+            .iter()
+            .position(|spawn| spawn.position == position)
+            .or_else(|| {
+                map.authored_stage_starts.iter().position(|brushes| {
+                    brushes
+                        .iter()
+                        .any(|brush| hull.interval(position, position, brush).is_some())
+                })
+            })
+            .or_else(|| start_brush(&course.zones, &ZoneKind::Start, position, hull).map(|_| 0))?;
+        u16::try_from(index + 1).ok()
     }
 
     /// Consume one simulation tick to return to the current authored stage start.
@@ -630,10 +678,18 @@ impl Session {
         {
             return Some(yaw);
         }
-        let input = command.input;
+        let mut input = command.input;
+        if self.triggers.teleport_movement_lock {
+            input.forward = 0.0;
+            input.strafe = 0.0;
+            input.jump = false;
+        }
         self.pitch_override = None;
         if let Some(handoff) = self.triggers.pending_stage.take() {
             self.triggers.stage = handoff.stage;
+            if self.practice.is_some() {
+                self.triggers.practice_stage = Some(handoff.stage);
+            }
             self.triggers.tick += 1;
             self.triggers.pending_push = None;
             self.triggers.base_velocity = None;
@@ -660,6 +716,21 @@ impl Session {
         let precise_triggers = self.uses_precise_triggers(course);
         let hull = TriggerHull::for_player(&self.player, precise_triggers);
         let map = &course.map_triggers;
+        let source_timer = map.source_timer.as_ref();
+        let source_track = source_timer.map(|timer| timer.track(self.bonus));
+        let bhop_allowed = source_timer.is_none_or(|timer| {
+            timer.auto_bhop(self.bonus, |brush| {
+                hull.interval(from, from, brush).is_some()
+            })
+        });
+        if let Some(timer) = source_timer
+            && !self.triggers.teleport_movement_lock
+        {
+            self.triggers.imported_start_armed |=
+                timer.can_prime(self.bonus, from, self.player.grounded, |brush| {
+                    hull.interval(from, from, brush).is_some()
+                });
+        }
         let profile = self.physics_profile(course);
         let bonus = (profile == PhysicsProfile::SurfdBonus)
             .then(|| course.bonus_rules(self.bonus))
@@ -687,7 +758,8 @@ impl Session {
             ZoneKind::Start
         };
         let previous_start = start_brush(zones, &start_kind, from, hull);
-        let restricted = !self.options.unrestricted_start;
+        let restricted = !self.options.unrestricted_start
+            && source_track.is_none_or(|track| track.limit_start_ground_speed);
         let limit_prehops = restricted && format.is_none_or(|format| format >= 2);
         if limit_prehops && previous_start.is_some() {
             let region = Some(u16::from(matches!(start_kind, ZoneKind::StageStart(_))));
@@ -736,7 +808,7 @@ impl Session {
             &mut self.brush_candidates,
             StepRules {
                 movement: self.rules,
-                auto_bhop: self.options.auto_bhop,
+                auto_bhop: self.options.auto_bhop && bhop_allowed,
                 blocked_start_jump,
                 no_jump_scale,
                 movement_scale: self.triggers.movement_scale,
@@ -756,7 +828,7 @@ impl Session {
                 exact_bonus_contacts: bonus.is_some(),
                 downhill_landing: format.map_or(profile.uses_surfd(), |format| format >= 8),
                 recorded_yaw: command.source_yaw_degrees.filter(|yaw| yaw.abs() <= 360.0),
-                recorded_axes,
+                recorded_axes: recorded_axes.filter(|_| !self.triggers.teleport_movement_lock),
                 pitch: command.pitch,
                 ladder_ids: (profile.uses_surfd() && !ladder_ids.is_empty()).then_some(ladder_ids),
                 water_hulls: if profile.uses_surfd() {
@@ -799,7 +871,18 @@ impl Session {
             self.start_jumps = self.start_jumps.saturating_add(1);
         }
         let to = self.player.position;
+        if self.player.grounded {
+            self.triggers.teleport_movement_lock = false;
+        }
         let hull = TriggerHull::for_player(&self.player, precise_triggers);
+        if let Some(timer) = source_timer
+            && !self.triggers.teleport_movement_lock
+        {
+            self.triggers.imported_start_armed |=
+                timer.can_prime(self.bonus, to, self.player.grounded, |brush| {
+                    hull.interval(to, to, brush).is_some()
+                });
+        }
         let speed = self.player.velocity.x.hypot(self.player.velocity.z);
         let inside_start = start_brush(zones, &ZoneKind::Start, to, hull).is_some();
         let settled = restricted
@@ -833,6 +916,17 @@ impl Session {
         let mut teleported = false;
         let mut segment_end = 1.0;
         for (at, event) in events {
+            if self.triggers.teleport_movement_lock
+                && matches!(
+                    event,
+                    ZoneEvent::StartEntry
+                        | ZoneEvent::StartExit
+                        | ZoneEvent::Checkpoint(_)
+                        | ZoneEvent::Finish
+                )
+            {
+                continue;
+            }
             match event {
                 ZoneEvent::StartEntry
                     if self.phase == RunPhase::Running && !self.triggers.stage_start_recovery =>
@@ -840,7 +934,14 @@ impl Session {
                     self.clear_run();
                     self.triggers.stage = 1;
                 }
-                ZoneEvent::StartExit if self.phase == RunPhase::Ready => {
+                ZoneEvent::StartEntry if self.triggers.practice_stage.is_some() => {
+                    self.triggers.practice_stage = Some(1);
+                }
+                ZoneEvent::StartExit
+                    if self.phase == RunPhase::Ready
+                        && (source_timer.is_none() || self.triggers.imported_start_armed) =>
+                {
+                    self.triggers.imported_start_armed = false;
                     self.phase = RunPhase::Running;
                     let start_tick = self.triggers.tick.saturating_sub(1) as f64 + at;
                     self.run_start_tick = Some(start_tick);
@@ -852,8 +953,15 @@ impl Session {
                 }
                 ZoneEvent::Checkpoint(order)
                     if self.phase == RunPhase::Running
-                        && self.checkpoint_order.get(self.splits.len()) == Some(&order) =>
+                        && if source_track.is_some_and(|track| !track.checkpoints_ordered) {
+                            !self.unordered_checkpoints.contains(&order)
+                        } else {
+                            self.checkpoint_order.get(self.splits.len()) == Some(&order)
+                        } =>
                 {
+                    if source_track.is_some_and(|track| !track.checkpoints_ordered) {
+                        self.unordered_checkpoints.push(order);
+                    }
                     self.splits.push(self.time_at(at, running_from));
                     let velocity = movement
                         .velocity_before_downhill_landing
@@ -863,9 +971,18 @@ impl Session {
                         self.triggers.stage = (self.splits.len() + 1) as u16;
                     }
                 }
+                ZoneEvent::Checkpoint(order)
+                    if self.practice.is_some()
+                        && map.continuous_stages
+                        && self.stage_count(course) == Some(self.checkpoint_order.len() + 1)
+                        && let Ok(index) = self.checkpoint_order.binary_search(&order) =>
+                {
+                    self.triggers.practice_stage = u16::try_from(index + 2).ok();
+                }
                 ZoneEvent::Finish
                     if self.phase == RunPhase::Running
-                        && self.splits.len() == self.checkpoint_count() =>
+                        && (source_track.is_some_and(|track| !track.checkpoints_required)
+                            || self.splits.len() == self.checkpoint_count()) =>
                 {
                     self.elapsed = self.time_at(at, running_from);
                     self.best = Some(
@@ -884,13 +1001,23 @@ impl Session {
                     index,
                     position,
                     yaw,
-                    clear_velocity,
+                    velocity,
                 } if !finished && (at > 0.0 || self.last_teleport != Some(index)) => {
                     self.player.position = position;
                     self.mark_pose_discontinuity();
                     self.player.detach_ground();
-                    if clear_velocity {
-                        self.player.velocity = Vec3::ZERO;
+                    if velocity != TeleportVelocity::Preserve {
+                        self.player.velocity = if velocity == TeleportVelocity::KeepDownward {
+                            self.triggers.teleport_movement_lock = true;
+                            Vec3::Y * self.player.velocity.y.min(0.0)
+                        } else {
+                            Vec3::ZERO
+                        };
+                        if matches!(zones[index].kind, ZoneKind::MomentumTeleport { .. }) {
+                            self.triggers.pending_push = None;
+                            self.triggers.carried_push = None;
+                            self.triggers.base_velocity = None;
+                        }
                         self.start_jumps = 0;
                         self.start_ground_time = 0.0;
                         self.start_region = None;
@@ -969,6 +1096,9 @@ impl Session {
                         }
                         if let Some(stage) = teleport.stage {
                             self.triggers.stage = stage;
+                            if self.practice.is_some() {
+                                self.triggers.practice_stage = Some(stage);
+                            }
                         }
                         if course.map_triggers.source_push_ground_fix {
                             self.triggers.ground_check = Some(GroundCheck::Teleport);
@@ -1014,7 +1144,8 @@ impl Session {
         let kill_y = bonus
             .and_then(|rules| rules.fall_y)
             .unwrap_or(course.kill_y);
-        if position.y < kill_y || position.x.abs().max(position.z.abs()) > 32768.0 {
+        let world_limit = map.source_world_limit.unwrap_or(32768.0);
+        if position.y < kill_y || position.x.abs().max(position.z.abs()) > world_limit {
             self.restart(course);
             return Some(self.spawn_yaw(course));
         }
@@ -1287,6 +1418,7 @@ impl Session {
         };
         self.elapsed = 0.0;
         self.splits.clear();
+        self.unordered_checkpoints.clear();
         self.checkpoint_speeds.clear();
         self.run_start_tick = None;
         self.stage_clock = StageClock::default();
@@ -1550,9 +1682,16 @@ enum ZoneEvent<'a> {
         index: usize,
         position: Vec3,
         yaw: Option<f32>,
-        clear_velocity: bool,
+        velocity: TeleportVelocity,
     },
     AuthoredTeleport(&'a AuthoredTeleport),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TeleportVelocity {
+    Preserve,
+    Stop,
+    KeepDownward,
 }
 
 impl ZoneEvent<'_> {
@@ -1611,7 +1750,25 @@ fn zone_events<'a>(
                     index,
                     position,
                     yaw,
-                    clear_velocity: matches!(zone.kind, ZoneKind::StageTeleport { .. }),
+                    velocity: if matches!(zone.kind, ZoneKind::StageTeleport { .. }) {
+                        TeleportVelocity::Stop
+                    } else {
+                        TeleportVelocity::Preserve
+                    },
+                }),
+                ZoneKind::MomentumTeleport {
+                    position,
+                    yaw,
+                    keep_downward_velocity,
+                } => Some(ZoneEvent::Teleport {
+                    index,
+                    position,
+                    yaw,
+                    velocity: if keep_downward_velocity {
+                        TeleportVelocity::KeepDownward
+                    } else {
+                        TeleportVelocity::Stop
+                    },
                 }),
                 ZoneKind::AuthoredTeleport(ref teleport) => {
                     let allowed = teleport
@@ -1851,6 +2008,7 @@ mod tests {
                 ..Default::default()
             },
         );
+        assert_eq!(session.stage_progress(&course), Some((1, 2)));
         session.player.velocity.x = 2500.0;
         for _ in 0..6 {
             session.tick(&course, MoveInput::default());
@@ -1865,6 +2023,61 @@ mod tests {
         assert_eq!(second.time_us, 23_200);
         assert!(first.end_tick < second.start_tick);
         assert!((session.elapsed - 0.0712).abs() < 1e-7);
+        assert_eq!(session.stage_progress(&course), Some((2, 2)));
+        session.restart(&course);
+        assert_eq!(session.stage_progress(&course), Some((1, 2)));
+    }
+
+    #[test]
+    fn stage_progress_uses_authored_practice_stages_and_ignores_bonus_checkpoints() {
+        let mut course = course(vec![
+            zone(-10.0, 10.0, ZoneKind::Start),
+            zone(90.0, 100.0, ZoneKind::Checkpoint(1)),
+            zone(220.0, 230.0, ZoneKind::Finish),
+        ]);
+        assert_eq!(Session::new(&course).stage_progress(&course), None);
+        course.map_triggers.continuous_stages = true;
+        course.map_triggers.authored_stage_starts = vec![
+            vec![],
+            vec![zone(120.0, 130.0, ZoneKind::StageStart(2)).brush],
+        ];
+        let first = PracticeSpawn {
+            name: "First station".to_owned(),
+            position: course.spawn,
+            yaw: 0.0,
+            pitch: 0.0,
+            source_yaw_degrees: None,
+        };
+        let second = PracticeSpawn {
+            name: "Second station".to_owned(),
+            position: Vec3::new(125.0, 0.0, 0.0),
+            ..first.clone()
+        };
+        course.bonus_routes.push(crate::course::BonusRoute {
+            number: 1,
+            name: "Bonus".to_owned(),
+            spawn: first.clone(),
+            zones: course.zones.clone(),
+            revision: "bonus".to_owned(),
+        });
+        let mut session = Session::new(&course);
+        session.set_practice(&course, Some(&second));
+        assert_eq!(session.stage_progress(&course), Some((2, 2)));
+        session.set_practice(&course, Some(&first));
+        assert_eq!(session.stage_progress(&course), Some((1, 2)));
+        session.player.velocity.x = 2500.0;
+        for _ in 0..4 {
+            session.tick(&course, MoveInput::default());
+        }
+        assert_eq!(session.phase, RunPhase::Untimed);
+        assert_eq!(session.stage_progress(&course), Some((2, 2)));
+        assert!(session.save_position(0.0, 0.0));
+        session.restart(&course);
+        assert_eq!(session.stage_progress(&course), Some((1, 2)));
+        assert!(session.restore_position(&course).is_some());
+        assert_eq!(session.stage_progress(&course), Some((2, 2)));
+        session.select_bonus(&course, Some(1)).unwrap();
+        assert_eq!(session.stage_progress(&course), None);
     }
 
     #[test]
@@ -2187,6 +2400,7 @@ mod tests {
         assert_eq!(session.tick(&course, MoveInput::default()), None);
         assert_ne!(session.player.position, destination);
         assert_eq!(session.splits.len(), 1);
+        assert_eq!(session.stage_progress(&course), Some((1, 2)));
         let elapsed = session.elapsed;
         assert_eq!(session.tick(&course, MoveInput::default()), Some(2.0));
         assert_eq!(session.pitch_override(), Some(-0.4));
@@ -2194,6 +2408,7 @@ mod tests {
         assert_eq!(session.player.position, destination);
         assert_eq!(session.player.velocity, Vec3::NEG_Y * HALF_GRAVITY_STEP);
         assert_eq!(session.triggers.stage, 2);
+        assert_eq!(session.stage_progress(&course), Some((2, 2)));
         assert!(session.elapsed > elapsed);
 
         session.player.velocity.x = 4000.0;

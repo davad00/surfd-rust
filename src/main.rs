@@ -2,6 +2,7 @@
 mod ambient;
 mod bench;
 mod bench_render_trace;
+mod cosmetics;
 mod flythrough;
 mod library;
 mod menu;
@@ -21,10 +22,11 @@ use std::process::{Command, ExitCode};
 use bevy_surf::{
     catalog::{self, CatalogEntry, files},
     course::Course,
+    local_map,
     record_protocol::MAX_REPLAY_BYTES,
     reference_ghost::{MAX_TRACK_BYTES, ReferenceGhost},
     replay::RunReplay,
-    source_bsp, surfd_map,
+    surfd_map,
 };
 use library::MapLibrary;
 use serde::Deserialize;
@@ -67,11 +69,14 @@ fn launch() -> Result<(), String> {
             };
         }
         Some("--map" | "--inspect") => {
-            let path = PathBuf::from(args.next().ok_or("Expected a .bsp path")?);
+            let path = PathBuf::from(
+                args.next()
+                    .ok_or("Expected a .bsp, .bsp.gz, or .pk3 path")?,
+            );
             if args.next().is_some() {
-                return Err("Expected a single .bsp path".to_owned());
+                return Err("Expected a single map path".to_owned());
             }
-            let course = source_bsp::load(&path)?;
+            let course = local_map::load(&path)?;
             if flag.as_deref().is_some_and(|arg| arg == "--inspect") {
                 describe(&course);
                 return Ok(());
@@ -344,4 +349,16 @@ fn describe(course: &Course) {
         course.zones.len(),
         course.practice_spawns.len(),
     );
+    let session = bevy_surf::session::Session::new(course);
+    if let Some(mode) = course.imported_source_mode().or_else(|| {
+        (course.catalog_revision.is_none() && session.phase == bevy_surf::session::RunPhase::Ready)
+            .then(|| course.map_mode().as_str())
+    }) {
+        println!(
+            "Local {mode} timer: {} main checkpoints, {} bonuses, max velocity {}",
+            session.checkpoint_count(),
+            course.bonus_routes.len(),
+            bevy_surf::rules::MovementRules::for_course(course).max_velocity,
+        );
+    }
 }

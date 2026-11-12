@@ -295,6 +295,7 @@ mod tests {
                         run_id: Some("saved-run".into()),
                         stage_records: Vec::new(),
                         progression: None,
+                        bhop_progression: None,
                     })
                     .unwrap()
                 };

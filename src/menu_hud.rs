@@ -63,10 +63,8 @@ pub(super) fn spawn_hud(
                             MUTED,
                         ));
                     }
-                    if online.active_vote(now).is_some() {
-                        corner.spawn((text("", 15. * scale, INK), Label::RoomVote));
-                    }
                 });
+            online_ui::vote_panel(hud, online, now, scale, true);
             hud.spawn(Node {
                 align_items: AlignItems::End,
                 ..hud_corner(Some(20.), None, Some(22.), None)
@@ -116,6 +114,9 @@ pub(super) fn spawn_hud(
                 telemetry.spawn((text("00:00.000", 45. * scale, INK), Label::Clock));
                 if !settings.center_speed {
                     speed(telemetry, settings);
+                }
+                if drill.is_none() && game.displayed_session().stage_count(&game.course).is_some() {
+                    telemetry.spawn((text("", 14. * scale, INK), Label::StageProgress));
                 }
                 if drill.is_none() {
                     telemetry.spawn((text("", 12. * scale, MUTED), Label::RunStatus));
@@ -501,6 +502,12 @@ pub struct HudRecordKey {
     key: String,
 }
 
+#[derive(Default)]
+pub struct HudStageProgress {
+    progress: Option<(usize, usize)>,
+    label: String,
+}
+
 pub fn update_hud(
     game: Res<Game>,
     menu: Res<MenuState>,
@@ -511,7 +518,9 @@ pub fn update_hud(
     time: Res<Time>,
     mut labels: Query<(&Label, &mut Text, &mut TextColor)>,
     mut caps: Query<(&KeyCap, &mut BackgroundColor, &mut BorderColor)>,
+    mut vote_panels: Query<&mut Node, With<online_ui::VotePanel>>,
     mut record_key: Local<HudRecordKey>,
+    mut stage_progress: Local<HudStageProgress>,
 ) {
     let run = game.displayed_session();
     let options = run.options();
@@ -546,6 +555,14 @@ pub fn update_hud(
         })
         .and_then(|board| board.rows.first());
     let now = Instant::now();
+    let vote_seconds = online.active_vote(now).map(|(_, seconds)| seconds);
+    if vote_seconds.is_none() {
+        for mut panel in &mut vote_panels {
+            if panel.display != Display::None {
+                panel.display = Display::None;
+            }
+        }
+    }
     for (label, mut text, mut color) in &mut labels {
         let value = match label {
             Label::Notice => {
@@ -595,6 +612,20 @@ pub fn update_hud(
                 let velocity = run.player.velocity;
                 let speed = f64::from(velocity.x).hypot(f64::from(velocity.z));
                 format!("{:.0} units/s", speed.round())
+            }
+            Label::StageProgress => {
+                let progress = game.displayed_stage_progress();
+                if stage_progress.progress != progress {
+                    stage_progress.progress = progress;
+                    stage_progress.label.clear();
+                    if let Some((stage, total)) = progress {
+                        let _ = write!(stage_progress.label, "Stage {stage}/{total}");
+                    }
+                }
+                if text.0 != stage_progress.label {
+                    text.0.clone_from(&stage_progress.label);
+                }
+                continue;
             }
             Label::RunStatus => match run.phase {
                 RunPhase::Untimed => game
@@ -733,38 +764,8 @@ pub fn update_hud(
                 lines.join("\n")
             }
             Label::RoomMapClock => online.room_map_time(now).unwrap_or_default(),
-            Label::RoomVoteClock => online
-                .active_vote(now)
-                .map_or_else(String::new, |(vote, seconds)| {
-                    format!("{} · {seconds}s", online_ui::vote_title(vote.kind))
-                }),
-            Label::RoomVote => {
-                online
-                    .active_vote(now)
-                    .map_or_else(String::new, |(vote, seconds)| {
-                        let mut label =
-                            format!("{} · {seconds}s", online_ui::vote_title(vote.kind));
-                        for (index, map) in vote
-                            .maps
-                            .iter()
-                            .take(bevy_surf::network::MAP_VOTE_CHOICES)
-                            .enumerate()
-                        {
-                            let count = vote.votes.get(map).copied().unwrap_or_default();
-                            let _ = write!(
-                                label,
-                                "\n{}. {} · {count}",
-                                index + 1,
-                                online_ui::vote_choice_title(map)
-                            );
-                        }
-                        label.push_str(if online.managed_guest() {
-                            "\nSign in to vote"
-                        } else {
-                            "\nPress a number to vote"
-                        });
-                        label
-                    })
+            Label::RoomVoteClock => {
+                vote_seconds.map_or_else(String::new, |seconds| format!("{seconds}s"))
             }
             Label::Ranked => online.record_status.clone(),
             Label::LessonHeading => {

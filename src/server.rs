@@ -1,3 +1,4 @@
+use crate::catalog::{self, MapMode};
 use crate::network::{
     CONTINUE_MAP, ClientMessage, DEFAULT_ADDRESS, EXTEND_MAP, FramedSocket, MAP_VOTE_CHOICES,
     PROTOCOL_VERSION, PlayerInfo, PlayerState, Request, Response, RoomCapabilities,
@@ -60,6 +61,7 @@ const MAP_EXTENSION: Duration = Duration::from_secs(15 * 60);
 pub struct RoomConfig {
     pub bind: SocketAddr,
     pub name: String,
+    pub mode: MapMode,
     pub map: String,
     pub rotation: Vec<String>,
     pub capacity: usize,
@@ -75,6 +77,7 @@ impl Default for RoomConfig {
         Self {
             bind: DEFAULT_ADDRESS.parse().unwrap(),
             name: "Classic Surf".to_owned(),
+            mode: MapMode::Surf,
             map: "downline".to_owned(),
             rotation: ["downline", "surf_boreas", "surf_kitsune"]
                 .into_iter()
@@ -112,6 +115,20 @@ impl RoomConfig {
         }
         if !self.rotation.contains(&self.map) {
             self.rotation.insert(0, self.map.clone());
+        }
+        for map in &self.rotation {
+            if self.managed.is_some() && map != "downline" && catalog::find(map).is_none() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("{map} is unavailable in the ranked map catalog"),
+                ));
+            }
+            if MapMode::from_map_name(map) != self.mode {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("{map} cannot be played in a {} room", self.mode.label()),
+                ));
+            }
         }
         let mut seen = BTreeSet::new();
         self.rotation.retain(|map| seen.insert(map.clone()));
@@ -419,6 +436,7 @@ struct Ballots {
     choices: Option<VoteChoices>,
     kind: VoteKind,
     scheduled: bool,
+    runoff: bool,
 }
 
 #[derive(Clone)]
@@ -473,6 +491,7 @@ struct Room {
     next_snapshot: Instant,
     snapshot_encoder: SnapshotEncoder,
     next_vote_update: Instant,
+    vote_id: u64,
     peers: BTreeMap<u64, Peer>,
     next_id: u64,
     moderation: Moderation,
@@ -515,6 +534,7 @@ impl Room {
             next_snapshot: now,
             snapshot_encoder: SnapshotEncoder::default(),
             next_vote_update: now,
+            vote_id: 0,
             config,
             peers: BTreeMap::new(),
             next_id: 1,
@@ -865,6 +885,10 @@ impl Room {
             self.reject(id, "The room ticket is invalid, expired or already used.");
             return;
         };
+        if claims.mode != self.config.mode {
+            self.reject(id, "The ticket was issued for a different room mode.");
+            return;
+        }
         if refresh
             && (claims.identity.account_id.is_none()
                 || claims.identity.account_id != self.room_account(id))
@@ -950,6 +974,10 @@ impl Room {
             self.reject(id, "This room uses a different client protocol.");
             return false;
         }
+        if self.config.mode == MapMode::Bhop && !self.peers[&id].capabilities.bhop_rooms {
+            self.reject(id, "Update your client to join Bhop rooms.");
+            return false;
+        }
         let Some(name) = room_text(name, 24) else {
             self.reject(
                 id,
@@ -1017,7 +1045,9 @@ impl Room {
             let reason = match &message {
                 ClientMessage::Nominate(_) => Some("You need an account to nominate a map."),
                 ClientMessage::RockTheVote => Some("You need an account to rock the vote."),
-                ClientMessage::Vote(_) => Some("You need an account to vote."),
+                ClientMessage::Vote(_) | ClientMessage::VoteFor { .. } => {
+                    Some("You need an account to vote.")
+                }
                 _ => None,
             };
             if let Some(reason) = reason {
@@ -1052,6 +1082,19 @@ impl Room {
                 }
             }
             ClientMessage::Vote(map) => self.cast_vote(id, map, now),
+            ClientMessage::VoteFor { vote_id, choice } => {
+                let map = self.ballots.choices.as_ref().and_then(|choices| {
+                    let index = usize::from(choice.checked_sub(1)?);
+                    (vote_id == self.vote_id)
+                        .then(|| choices.maps.get(index))
+                        .flatten()
+                });
+                if let Some(map) = map.cloned() {
+                    self.cast_vote(id, map, now);
+                } else {
+                    self.error(id, "Choose a number from the current vote.");
+                }
+            }
             ClientMessage::Extend => {
                 if self.config.managed.is_some() {
                     self.start_extension_vote(id, now);
@@ -1451,6 +1494,7 @@ impl Room {
         RoomInfo {
             name: self.config.name.clone(),
             map: self.map.clone(),
+            mode: self.config.mode,
             players,
             capacity: self.config.capacity,
             room_id: self
@@ -1539,6 +1583,9 @@ impl Room {
             seconds_left: vote_remaining_ms.unwrap_or_default().div_ceil(1000),
             map_remaining_ms: Some(self.map_remaining_ms(now)),
             vote_remaining_ms,
+            vote_id: vote_remaining_ms.map(|_| self.vote_id),
+            selected: None,
+            runoff: self.ballots.runoff,
             rtv: self.ballots.rtv.len(),
             kind: self.ballots.kind,
         }
@@ -1556,6 +1603,8 @@ impl Room {
         self.ballots.kind = VoteKind::Map;
         self.ballots.choices = Some(self.vote_choices());
         self.ballots.scheduled = scheduled_expiry.is_some();
+        self.ballots.runoff = false;
+        self.vote_id += 1;
         self.ballots.deadline = Some(scheduled_expiry.unwrap_or(now + self.config.vote_duration));
         self.next_vote_update = now + Duration::from_secs(1);
         self.broadcast(ServerEvent::Notice("Map vote started.".to_owned()));
@@ -1582,6 +1631,8 @@ impl Room {
         }
         self.ballots.kind = VoteKind::Extend;
         self.ballots.scheduled = false;
+        self.ballots.runoff = false;
+        self.vote_id += 1;
         self.ballots.choices = Some(VoteChoices {
             maps: vec![EXTEND_MAP.to_owned(), CONTINUE_MAP.to_owned()],
             nominations: Vec::new(),
@@ -1666,9 +1717,26 @@ impl Room {
                 self.publish_vote(now);
             } else if now >= self.next_vote_update {
                 self.next_vote_update = now + Duration::from_secs(1);
-                self.broadcast(ServerEvent::Vote(vote));
+                self.publish_vote(now);
             }
             return;
+        }
+        let leading_count = vote.votes.values().copied().max().unwrap_or_default();
+        if now >= deadline
+            && self.config.managed.is_some()
+            && !self.ballots.runoff
+            && leading_count > 0
+        {
+            let tied: Vec<_> = vote
+                .maps
+                .iter()
+                .filter(|map| vote.votes.get(*map) == Some(&leading_count))
+                .cloned()
+                .collect();
+            if tied.len() > 1 {
+                self.start_runoff(now, tied);
+                return;
+            }
         }
         let winner = vote
             .maps
@@ -1682,12 +1750,32 @@ impl Room {
             .max()
             .filter(|(count, _, _)| *count >= vote.needed || now >= deadline)
             .map(|(_, _, map)| map.clone());
-        if let Some(map) = winner.or_else(|| (now >= deadline).then(|| self.next_map())) {
+        let fallback = || {
+            if self.ballots.runoff {
+                vote.maps.first().cloned()
+            } else {
+                Some(self.next_map())
+            }
+        };
+        if let Some(map) = winner.or_else(|| (now >= deadline).then(fallback).flatten()) {
             self.set_map(map, now, self.ballots.scheduled.then_some(deadline));
         } else if now >= self.next_vote_update {
             self.next_vote_update = now + Duration::from_secs(1);
-            self.broadcast(ServerEvent::Vote(vote));
+            self.publish_vote(now);
         }
+    }
+
+    fn start_runoff(&mut self, now: Instant, maps: Vec<String>) {
+        self.ballots.choices = Some(VoteChoices {
+            maps,
+            nominations: Vec::new(),
+        });
+        self.ballots.votes.clear();
+        self.ballots.runoff = true;
+        self.vote_id += 1;
+        self.ballots.deadline = Some(now + self.config.vote_duration);
+        self.next_vote_update = now + Duration::from_secs(1);
+        self.publish_vote(now);
     }
 
     fn next_map(&self) -> String {
@@ -1743,8 +1831,36 @@ impl Room {
     }
 
     fn publish_vote(&mut self, now: Instant) {
-        if self.player_count() != 0 {
-            self.broadcast(ServerEvent::Vote(self.vote_info(now)));
+        if self.player_count() == 0 {
+            return;
+        }
+        let mut vote = self.vote_info(now);
+        if self.ballots.votes.is_empty() {
+            self.broadcast(ServerEvent::Vote(vote));
+            return;
+        }
+        let mut frames = BTreeMap::new();
+        for (&id, peer) in self
+            .peers
+            .iter_mut()
+            .filter(|(_, peer)| peer.active_player().is_some())
+        {
+            vote.selected = self.ballots.votes.get(&id).and_then(|map| {
+                vote.maps
+                    .iter()
+                    .position(|choice| choice == map)
+                    .map(|index| (index + 1) as u8)
+            });
+            let frame = frames.entry(vote.selected).or_insert_with(|| {
+                encode(&Response::Event {
+                    epoch: self.epoch,
+                    event: ServerEvent::Vote(vote.clone()),
+                })
+                .ok()
+            });
+            if let Some(frame) = frame {
+                peer.queue(Arc::clone(frame));
+            }
         }
     }
 
@@ -2399,6 +2515,72 @@ mod tests {
     }
 
     #[test]
+    fn tied_managed_vote_opens_one_runoff_and_rejects_stale_numbers() {
+        let key = RoomTicketKey::from_hex("runoff", &"0123456789abcdef".repeat(4)).unwrap();
+        let mut room = Room::new(
+            RoomConfig {
+                managed: Some(key),
+                ..RoomConfig::default()
+            },
+            Moderation::default(),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let now = Instant::now();
+        let mut clients = Vec::new();
+        for (id, name) in [(1, "Alice"), (2, "Bob")] {
+            clients.push(std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap());
+            let (stream, address) = listener.accept().unwrap();
+            room.peers.insert(
+                id,
+                Peer::new(FramedSocket::new(stream).unwrap(), address, now),
+            );
+            let identity = RoomIdentity {
+                account_id: Some(id as i64),
+                moderator: false,
+                points: 0,
+                rank: Default::default(),
+            };
+            assert!(room.join(id, PROTOCOL_VERSION, name, Some(identity), now));
+        }
+        let expiry = room.map_deadline;
+        let opening = expiry - room.config.vote_duration;
+        room.advance_vote(opening);
+        let first = room.vote_info(opening);
+        let vote_id = first.vote_id.unwrap();
+        for (id, choice) in [(1, 1), (2, 2)] {
+            room.handle_command(id, ClientMessage::VoteFor { vote_id, choice }, opening);
+        }
+        assert_eq!(room.ballots.votes.len(), 2);
+        room.advance_vote(expiry);
+        let runoff = room.vote_info(expiry);
+        let runoff_id = runoff.vote_id.unwrap();
+        assert_ne!(runoff_id, vote_id);
+        assert!(runoff.runoff);
+        assert_eq!(runoff.maps, ["surf_boreas", "surf_kitsune"]);
+        assert_eq!(runoff.seconds_left, 20);
+        assert!(runoff.votes.is_empty());
+        room.handle_command(1, ClientMessage::VoteFor { vote_id, choice: 2 }, expiry);
+        assert!(room.ballots.votes.is_empty());
+        room.handle_command(
+            1,
+            ClientMessage::VoteFor {
+                vote_id: runoff_id,
+                choice: 2,
+            },
+            expiry,
+        );
+        assert_eq!(
+            room.ballots.votes.get(&1).map(String::as_str),
+            Some("surf_kitsune")
+        );
+        let end = expiry + room.config.vote_duration;
+        room.advance_vote(end);
+        assert_eq!(room.map, "surf_kitsune");
+        assert_eq!(room.map_deadline, end + room.config.map_duration);
+        assert!(!room.vote_info(end).open);
+    }
+
+    #[test]
     fn managed_map_votes_put_nominations_first_and_skip_the_last_map() {
         let key = RoomTicketKey::from_hex("choices", &"0123456789abcdef".repeat(4)).unwrap();
         let mut room = Room::new(
@@ -2488,6 +2670,10 @@ mod tests {
             |event| matches!(event, ServerEvent::Vote(vote) if vote.open && vote.vote_remaining_ms == Some(20_000) && vote.maps.first().is_some_and(|map| map == "surf_kitsune")),
         );
         signed.send(ClientMessage::Chat("/vote 1".into())).unwrap();
+        wait_for(
+            &signed,
+            |event| matches!(event, ServerEvent::Vote(vote) if vote.selected == Some(1)),
+        );
         wait_for(
             &guest,
             |event| matches!(event, ServerEvent::MapChanged { map } if map == "surf_kitsune"),
@@ -2755,6 +2941,70 @@ mod tests {
         wait_for(
             &alice,
             |event| matches!(event, ServerEvent::Players(players) if players.len() == 1),
+        );
+    }
+
+    #[test]
+    fn mixed_mode_rotations_and_unknown_ranked_maps_are_rejected() {
+        let mut config = RoomConfig {
+            mode: MapMode::Bhop,
+            map: "bhop_easy".into(),
+            rotation: vec!["bhop_other".into(), "surf_kitsune".into()],
+            ..RoomConfig::default()
+        };
+        assert!(
+            config
+                .clone()
+                .validated()
+                .unwrap_err()
+                .to_string()
+                .contains("surf_kitsune")
+        );
+        config.rotation.pop();
+        assert!(config.clone().validated().is_ok());
+        config.managed =
+            Some(RoomTicketKey::from_hex("bhop", &"0123456789abcdef".repeat(4)).unwrap());
+        assert!(
+            config
+                .validated()
+                .unwrap_err()
+                .to_string()
+                .contains("ranked map catalog")
+        );
+    }
+
+    #[test]
+    fn managed_bhop_room_rejects_a_surf_ticket() {
+        let key = RoomTicketKey::from_hex("bhop", &"0123456789abcdef".repeat(4)).unwrap();
+        let server = RoomServer::bind(RoomConfig {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            mode: MapMode::Bhop,
+            map: "bhop_easy".into(),
+            rotation: Vec::new(),
+            managed: Some(key.clone()),
+            ..RoomConfig::default()
+        })
+        .unwrap();
+        let address = server.local_addr().to_string();
+        let wrong =
+            Client::connect_with_ticket(&address, key.issue(None, ticket_time()).unwrap()).unwrap();
+        let rejected = wait_for(&wrong, |event| matches!(event, ServerEvent::Error(_)));
+        assert!(
+            matches!(rejected, ServerEvent::Error(message) if message.contains("different room mode"))
+        );
+        let ticket = key
+            .issue_for_mode(
+                MapMode::Bhop,
+                Some((2, "Hopper".into(), false, 500)),
+                ticket_time(),
+            )
+            .unwrap();
+        let correct = Client::connect_with_ticket(&address, ticket).unwrap();
+        let welcome = wait_for(&correct, |event| {
+            matches!(event, ServerEvent::Welcome { .. })
+        });
+        assert!(
+            matches!(welcome, ServerEvent::Welcome { room, .. } if room.mode == MapMode::Bhop && room.map == "bhop_easy")
         );
     }
 }

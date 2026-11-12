@@ -617,6 +617,7 @@ mod tests {
                         showcase: Vec::new(),
                         revision: 0,
                         progression: Default::default(),
+                        bhop_progression: Default::default(),
                     },
                 })
             })

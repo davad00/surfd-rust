@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::replay::RunReplay;
+use crate::{catalog::MapMode, replay::RunReplay};
 
 pub const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:27166";
 pub const MAX_REPLAY_BYTES: usize = 16 * 1024 * 1024;
@@ -12,6 +12,8 @@ pub const VERIFICATION_BUSY: &str =
 pub struct ManagedRoomEntry {
     pub room_id: String,
     pub address: String,
+    #[serde(default)]
+    pub mode: crate::catalog::MapMode,
 }
 
 pub type RoomTicketRequest = ManagedRoomEntry;
@@ -56,6 +58,14 @@ impl ProgressionRank {
             Self::Legend => "Legend",
         }
     }
+
+    pub fn label_for(self, mode: MapMode) -> &'static str {
+        if self == Self::Surfer && mode == MapMode::Bhop {
+            "Hopper"
+        } else {
+            self.label()
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default, Deserialize, Serialize)]
@@ -76,6 +86,8 @@ pub struct ProgressionRow {
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Progression {
+    #[serde(default)]
+    pub mode: MapMode,
     pub entries: Vec<ProgressionRow>,
     pub total: usize,
     pub own: Option<ProgressionRow>,
@@ -102,6 +114,8 @@ pub struct Profile {
     pub revision: u64,
     #[serde(flatten)]
     pub progression: ProgressionStats,
+    #[serde(default)]
+    pub bhop_progression: ProgressionStats,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -348,6 +362,8 @@ pub struct Submission {
     pub stage_records: Vec<StageRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progression: Option<ProgressionStats>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bhop_progression: Option<ProgressionStats>,
 }
 
 #[derive(Deserialize, Serialize)]

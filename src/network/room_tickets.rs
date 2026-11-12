@@ -3,7 +3,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::record_protocol::ProgressionRank;
+use crate::{catalog::MapMode, record_protocol::ProgressionRank};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -70,6 +70,8 @@ impl fmt::Debug for RoomTicketKey {
 pub(crate) struct TicketClaims {
     version: u8,
     room: String,
+    #[serde(default)]
+    pub mode: MapMode,
     pub nonce: [u8; 16],
     pub name: String,
     pub identity: RoomIdentity,
@@ -115,9 +117,19 @@ impl RoomTicketKey {
         self.secret == other.secret
     }
 
-    #[cfg(any(feature = "records-service", test))]
+    #[cfg(test)]
     pub(crate) fn issue(
         &self,
+        account: Option<(i64, String, bool, u32)>,
+        now: i64,
+    ) -> Result<RoomJoinTicket, String> {
+        self.issue_for_mode(MapMode::Surf, account, now)
+    }
+
+    #[cfg(any(feature = "records-service", test))]
+    pub(crate) fn issue_for_mode(
+        &self,
+        mode: MapMode,
         account: Option<(i64, String, bool, u32)>,
         now: i64,
     ) -> Result<RoomJoinTicket, String> {
@@ -147,6 +159,7 @@ impl RoomTicketKey {
         let claims = TicketClaims {
             version: TICKET_VERSION,
             room: self.room_id.clone(),
+            mode,
             nonce,
             name,
             identity,

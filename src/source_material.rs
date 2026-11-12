@@ -4,9 +4,10 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+use lzma_rs::decompress::{Options, UnpackedSize};
 use vformats::bsp::{ZipEntry, ZipReader};
 use vformats::vpk::{self, VpkLocation};
 use vformats::{Limits, vmt, vtf};
@@ -20,6 +21,7 @@ const MAX_PATCH_DEPTH: u8 = 8;
 pub(crate) struct Materials<'a> {
     pak: Option<ZipReader<'a>>,
     pak_index: HashMap<String, usize>,
+    pak_lzma: Vec<Option<&'a [u8]>>,
     roots: Vec<PathBuf>,
     archives: Option<Vec<Archive>>,
     limits: Limits,
@@ -167,9 +169,14 @@ impl<'a> Materials<'a> {
             .enumerate()
             .filter_map(|(index, entry)| pak_entry_path(entry).map(|path| (path, index)))
             .collect();
+        let pak_lzma = pak
+            .as_ref()
+            .and_then(|pak| zip_lzma_payloads(pak_bytes, pak.entries().len()))
+            .unwrap_or_default();
         Self {
             pak,
             pak_index,
+            pak_lzma,
             roots: asset_roots(map_path),
             archives: None,
             limits: Limits {
@@ -262,8 +269,12 @@ impl<'a> Materials<'a> {
     fn read(&mut self, path: &str) -> Option<Cow<'a, [u8]>> {
         if let Some(bytes) = self.pak.as_ref().and_then(|pak| {
             let index = *self.pak_index.get(path)?;
-            pak.entry_bytes(pak.entries().get(index)?, &self.limits)
-                .ok()
+            let entry = pak.entries().get(index)?;
+            if let Some(payload) = self.pak_lzma.get(index).copied().flatten() {
+                unpack_zip_lzma(payload, entry.uncompressed_size, entry.crc32).map(Cow::Owned)
+            } else {
+                pak.entry_bytes(entry, &self.limits).ok()
+            }
         }) {
             return Some(bytes);
         }
@@ -280,6 +291,82 @@ impl<'a> Materials<'a> {
             .find_map(|archive| archive.read(path))
             .map(Cow::Owned)
     }
+}
+
+// Keep ZipReader's paths and directory order. Look up raw payloads for method 14,
+// whose compressed offsets are private to that reader.
+fn zip_lzma_payloads(bytes: &[u8], count: usize) -> Option<Vec<Option<&[u8]>>> {
+    if count == 0 {
+        return Some(Vec::new());
+    }
+    let last_eocd = bytes.len().checked_sub(22)?;
+    let eocd = (last_eocd.saturating_sub(usize::from(u16::MAX))..=last_eocd)
+        .rev()
+        .find(|&offset| bytes[offset..].starts_with(b"PK\x05\x06"))?;
+    let directory_offset = zip_u32(&bytes[eocd..], 16)? as usize;
+    let local_data = bytes.get(..directory_offset)?;
+    let mut directory = bytes.get(directory_offset..eocd)?;
+    let mut payloads = Vec::with_capacity(count);
+    for _ in 0..count {
+        if !directory.starts_with(b"PK\x01\x02") {
+            return None;
+        }
+        let name_len = usize::from(zip_u16(directory, 28)?);
+        let extra_len = usize::from(zip_u16(directory, 30)?);
+        let comment_len = usize::from(zip_u16(directory, 32)?);
+        let payload = if zip_u16(directory, 10)? == 14 && zip_u16(directory, 8)? & 1 == 0 {
+            let local = zip_u32(directory, 42)? as usize;
+            let size = zip_u32(directory, 20)? as usize;
+            zip_lzma_payload(local_data, local, size)
+        } else {
+            None
+        };
+        payloads.push(payload);
+        directory = directory.get(46 + name_len + extra_len + comment_len..)?;
+    }
+    Some(payloads)
+}
+
+fn zip_lzma_payload(bytes: &[u8], local: usize, size: usize) -> Option<&[u8]> {
+    let header = bytes.get(local..)?;
+    if !header.starts_with(b"PK\x03\x04")
+        || zip_u16(header, 6)? & 1 != 0
+        || zip_u16(header, 8)? != 14
+        || size as u64 > MAX_ENTRY_BYTES
+    {
+        return None;
+    }
+    let start = 30 + usize::from(zip_u16(header, 26)?) + usize::from(zip_u16(header, 28)?);
+    header.get(start..start.checked_add(size)?)
+}
+
+fn zip_u16(bytes: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(*bytes.get(at..)?.first_chunk()?))
+}
+
+fn zip_u32(bytes: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(*bytes.get(at..)?.first_chunk()?))
+}
+
+fn unpack_zip_lzma(payload: &[u8], size: u64, crc: u32) -> Option<Vec<u8>> {
+    // ZIP method 14 prefixes the five standard LZMA properties with its version and length.
+    if size > MAX_ENTRY_BYTES || zip_u16(payload, 2)? != 5 {
+        return None;
+    }
+    let mut output = Vec::new();
+    lzma_rs::lzma_decompress_with_options(
+        &mut Cursor::new(payload.get(4..)?),
+        &mut output,
+        &Options {
+            unpacked_size: UnpackedSize::UseProvided(Some(size)),
+            memlimit: Some(MAX_ENTRY_BYTES as usize),
+            ..Options::default()
+        },
+    )
+    .ok()?;
+    let mut checksum = flate2::Crc::new();
+    checksum.update(&output);
+    (output.len() as u64 == size && checksum.sum() == crc).then_some(output)
 }
 
 fn pak_entry_path(entry: &ZipEntry) -> Option<String> {
@@ -440,6 +527,27 @@ impl Archive {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_zip_lzma_checks_size_and_crc() {
+        let original = b"embedded material data";
+        let mut stream = Vec::new();
+        lzma_rs::lzma_compress(&mut Cursor::new(original), &mut stream).unwrap();
+        let mut payload = vec![9, 20, 5, 0];
+        payload.extend_from_slice(&stream[..5]);
+        payload.extend_from_slice(&stream[13..]);
+
+        let mut checksum = flate2::Crc::new();
+        checksum.update(original);
+        let size = original.len() as u64;
+        let crc = checksum.sum();
+        assert_eq!(
+            unpack_zip_lzma(&payload, size, crc).as_deref(),
+            Some(original.as_slice())
+        );
+        assert!(unpack_zip_lzma(&payload, size, crc ^ 1).is_none());
+        assert!(unpack_zip_lzma(&payload, MAX_ENTRY_BYTES + 1, crc).is_none());
+    }
 
     #[test]
     fn material_references_stay_inside_the_materials_tree() {

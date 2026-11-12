@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::cosmetics::{AvatarSkin, KnifeFinish};
+
 const SOURCE_ASPECT: f32 = 4.0 / 3.0;
 const SOURCE_MOUSE_YAW: f64 = 0.022;
 pub const MAX_BINDINGS: usize = 4;
@@ -218,6 +220,8 @@ pub struct Settings {
     pub colorblind: bool,
     pub diagnostics: bool,
     pub crosshair: CrosshairStyle,
+    pub avatar_skin: AvatarSkin,
+    pub knife_finish: KnifeFinish,
     pub turns_enabled: bool,
     pub yaw_speeds: Vec<f32>,
     pub yaw_index: usize,
@@ -250,6 +254,8 @@ impl Default for Settings {
             colorblind: false,
             diagnostics: false,
             crosshair: CrosshairStyle::default(),
+            avatar_skin: AvatarSkin::default(),
+            knife_finish: KnifeFinish::default(),
             turns_enabled: false,
             yaw_speeds: vec![210.0],
             yaw_index: 0,
@@ -694,6 +700,30 @@ fn checksum(bytes: &[u8]) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cosmetic_choices_round_trip_without_resetting_existing_preferences() {
+        let equipped = Settings::read(
+            br#"{"version":2,"sensitivity":8.0,"avatar_skin":"ember","knife_finish":"glacier"}"#,
+        );
+        let saved = serde_json::to_vec(&equipped).unwrap();
+        let reloaded = Settings::read(&saved);
+        assert_eq!(reloaded.avatar_skin, AvatarSkin::Ember);
+        assert_eq!(reloaded.knife_finish, KnifeFinish::Glacier);
+        assert_eq!(reloaded.sensitivity, 8.0);
+
+        let legacy = Settings::read(br#"{"version":2,"sensitivity":8.0}"#);
+        assert_eq!(legacy.avatar_skin, AvatarSkin::Classic);
+        assert_eq!(legacy.knife_finish, KnifeFinish::Classic);
+        assert_eq!(legacy.sensitivity, 8.0);
+
+        let future = Settings::read(
+            br#"{"version":2,"sensitivity":8.0,"avatar_skin":"future","knife_finish":"future"}"#,
+        );
+        assert_eq!(future.avatar_skin, AvatarSkin::Classic);
+        assert_eq!(future.knife_finish, KnifeFinish::Classic);
+        assert_eq!(future.sensitivity, 8.0);
+    }
 
     #[test]
     fn original_crosshair_code_matches_and_round_trips() {

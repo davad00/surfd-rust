@@ -53,13 +53,22 @@ pub(super) fn run(room_id: &str) -> Result<(), String> {
         .map_err(|error| format!("Could not start the guest join: {error}"))?;
     let room = await_welcome(&client)?;
     leave(&client)?;
-    if room.room_id.as_deref() != Some(room_id) {
-        return Err("The joined room does not match the records service directory.".into());
+    if room.room_id.as_deref() != Some(room_id) || room.mode != entry.mode {
+        return Err(
+            "The joined room identity or mode does not match the records service directory.".into(),
+        );
     }
     if !room.map.eq_ignore_ascii_case("downline") && catalog::find(&room.map).is_none() {
         return Err(format!(
             "The room's current map, {}, is outside this client's catalog.",
             room.map
+        ));
+    }
+    if catalog::MapMode::from_map_name(&room.map) != room.mode {
+        return Err(format!(
+            "The room's map, {}, is outside its {} mode.",
+            room.map,
+            room.mode.label()
         ));
     }
     print_json(&RoomCheck {
@@ -93,8 +102,10 @@ fn discover_registered_room(
         .find(|entry| entry.room_id == room_id)
         .ok_or_else(|| format!("The records service has no managed room named {room_id}."))?;
     let (discovered, latency) = network::discover_with_latency(&entry.address)?;
-    if discovered.room_id.as_deref() != Some(room_id) {
-        return Err("The room identity does not match the records service directory.".into());
+    if discovered.room_id.as_deref() != Some(room_id) || discovered.mode != entry.mode {
+        return Err(
+            "The room identity or mode does not match the records service directory.".into(),
+        );
     }
     Ok((entry, discovered, latency))
 }

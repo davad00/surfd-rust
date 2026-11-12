@@ -517,6 +517,7 @@ mod tests {
         let room = ManagedRoomEntry {
             room_id: "eu".into(),
             address: "tls://rooms.example.com:27165".into(),
+            mode: bevy_surf::catalog::MapMode::Surf,
         };
         let server = std::thread::spawn(move || {
             for (status, retry_after) in [
@@ -638,6 +639,7 @@ mod tests {
                     run_id: Some("saved-run".into()),
                     stage_records: Vec::new(),
                     progression: None,
+                    bhop_progression: None,
                 }))
                 .unwrap();
                 write!(

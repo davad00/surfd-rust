@@ -33,6 +33,8 @@ mod render_compat;
 mod lesson_drill_feedback;
 use lesson_drill_feedback::DrillTrace;
 
+#[path = "knife_view.rs"]
+mod knife_view;
 #[path = "lesson_live_coach.rs"]
 mod lesson_live_coach;
 pub(super) use lesson_drill_feedback::{DrillFeedback, DrillFinding};
@@ -537,6 +539,16 @@ impl Game {
             .as_ref()
             .map_or(&self.session, |playback| &playback.session)
     }
+    pub(super) fn displayed_stage_progress(&self) -> Option<(usize, usize)> {
+        let progress = self.displayed_session().stage_progress(&self.course)?;
+        let Some(playback) = &self.reference_playback else {
+            return Some(progress);
+        };
+        let total = progress.1;
+        let (recorded_splits, _) = playback.track.recorded_splits()?;
+        (recorded_splits.len() + 1 == total)
+            .then(|| ((playback.session.splits.len() + 1).min(total), total))
+    }
     pub fn replay_progress(&self) -> Option<(usize, usize, bool)> {
         if let Some(playback) = &self.reference_playback {
             return Some((
@@ -863,7 +875,10 @@ pub fn run(
         .add_plugins(plugins)
         .add_plugins(crate::ui_font::UiFontPlugin)
         .add_plugins(world::SurfdMaterialPlugin)
-        .add_systems(Startup, (spawn_camera, configure_map_assets).chain())
+        .add_systems(
+            Startup,
+            (spawn_camera, configure_map_assets, knife_view::setup).chain(),
+        )
         .add_systems(FixedUpdate, advance)
         .add_systems(
             Update,
@@ -874,6 +889,7 @@ pub fn run(
                 prepare_ghost,
                 world::update_world,
                 update_camera,
+                knife_view::update,
                 world::update_map_view,
                 crate::online_world::update_players,
                 menu::render,
@@ -972,6 +988,7 @@ fn spawn_camera(
         DistanceFog::default(),
         Transform::from_translation(game.eye()).with_rotation(rotation(yaw, pitch)),
         ViewCamera,
+        IsDefaultUiCamera,
     ));
     if let Some(mut benchmark) = benchmark {
         let mut image = Image::new_target_texture(
@@ -982,10 +999,7 @@ fn spawn_camera(
         );
         image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
         let target = images.add(image);
-        camera.insert((
-            bevy::camera::RenderTarget::from(target.clone()),
-            IsDefaultUiCamera,
-        ));
+        camera.insert(bevy::camera::RenderTarget::from(target.clone()));
         benchmark.target = Some(target);
     }
 }
@@ -1394,6 +1408,7 @@ mod tests {
         online.room = Some(RoomInfo {
             name: "Test room".into(),
             map: course.name.clone(),
+            mode: course.map_mode(),
             players: 2,
             capacity: 4,
             room_id: None,

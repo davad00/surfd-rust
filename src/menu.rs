@@ -15,19 +15,25 @@ use bevy::picking::{
 };
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use bevy::ui::{BackgroundGradient, ColorStop, Gradient, LinearGradient};
+use bevy::ui::{BackgroundGradient, ColorStop, Gradient, LinearGradient, RelativeCursorPosition};
 use bevy::window::{MonitorSelection, PresentMode, PrimaryWindow, WindowMode};
+use bevy_surf::catalog::MapMode;
 use bevy_surf::session::{RunOptions, RunPhase};
 use serde::{Deserialize, Serialize};
 
+use crate::cosmetics::{AvatarSkin, KnifeFinish};
 use crate::flythrough::{BackdropCaption, BackdropImage};
 use crate::library::{MapEntry, MapLibrary};
 use crate::online::{Online, OnlinePage};
 use crate::online_ui;
 use crate::view::Game;
 
+#[path = "menu_cosmetics.rs"]
+mod menu_cosmetics;
 #[path = "menu_hud.rs"]
 mod menu_hud;
+#[path = "menu_pause_board.rs"]
+mod menu_pause_board;
 #[path = "menu_settings.rs"]
 mod menu_settings;
 #[path = "menu_training.rs"]
@@ -76,6 +82,7 @@ pub enum Page {
 pub enum MenuRequest {
     QuickPlay,
     LeaveServer,
+    EnterLocalMap,
     StartLesson(&'static str),
     WatchLesson(&'static str),
     StartPathCourse(&'static str),
@@ -83,6 +90,8 @@ pub enum MenuRequest {
     WatchReferenceReplay,
     ExportReplay,
     ToggleGhost,
+    PauseRecordGhost,
+    PauseWatchRecordRoute,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,6 +151,8 @@ pub struct MenuState {
     notice_until: std::time::Instant,
     query: String,
     map_page: usize,
+    map_mode: MapMode,
+    local_maps_only: bool,
     spawn_page: usize,
     record_page: usize,
     records: BTreeMap<String, BestRun>,
@@ -169,6 +180,11 @@ struct BestRun {
 }
 
 impl MenuState {
+    pub(crate) fn open_verified_records(&mut self) {
+        self.show_online_records = true;
+        self.go(Page::Records);
+    }
+
     pub fn new(data: &Path) -> Self {
         let settings_path = data.join("settings.json");
         let records = fs::read(data.join("records.json"))
@@ -187,6 +203,8 @@ impl MenuState {
             notice_until: std::time::Instant::now(),
             query: String::new(),
             map_page: 0,
+            map_mode: MapMode::Surf,
+            local_maps_only: false,
             spawn_page: 0,
             record_page: 0,
             records,
@@ -225,6 +243,16 @@ impl MenuState {
 
     pub(super) fn reset_content_scroll(&mut self) {
         self.content_scroll_y = 0.0;
+    }
+
+    fn browse_maps(&mut self, local_only: bool) {
+        if self.local_maps_only != local_only {
+            self.local_maps_only = local_only;
+            self.query.clear();
+            self.map_page = 0;
+            self.dirty = true;
+        }
+        self.go(Page::Maps);
     }
 
     pub fn set_status(&mut self, message: String) {
@@ -328,6 +356,11 @@ impl MenuState {
     fn record_key(&self, game: &Game) -> String {
         let options = game.session.options();
         let mut key = game.course.name.clone();
+        if game.course.catalog_revision.is_none()
+            && (bevy_surf::catalog::find(&key).is_some() || key.eq_ignore_ascii_case("Downline"))
+        {
+            key.push_str(" · Local map");
+        }
         if let Some(number) = game.selected_bonus() {
             key.push_str(&format!(" · Bonus {number}"));
         }
@@ -426,6 +459,8 @@ enum Action {
     RestorePosition,
     Bonus(Option<u16>),
     Load(usize),
+    BrowseLocalMaps,
+    MapMode(MapMode),
     MapPage(isize),
     SpawnPage(isize),
     RecordPage(isize),
@@ -448,6 +483,8 @@ enum Action {
     CopyCrosshair,
     PasteCrosshair,
     OnlineRecords(bool),
+    EquipAvatar(AvatarSkin),
+    EquipKnife(KnifeFinish),
     ResetSettings,
     Quit,
 }
@@ -471,6 +508,7 @@ pub(super) enum Label {
     Mode,
     Best,
     Speed,
+    StageProgress,
     RunStatus,
     Sync,
     Route(usize),
@@ -479,7 +517,6 @@ pub(super) enum Label {
     Chat,
     RoomMapClock,
     RoomVoteClock,
-    RoomVote,
     Ranked,
     Ghost,
     Shortcut,
@@ -510,20 +547,30 @@ pub fn keyboard(
     mouse: Res<ButtonInput<MouseButton>>,
     mut input: MessageReader<KeyboardInput>,
     scroll: Res<AccumulatedMouseScroll>,
-    mut panes: Query<&mut ScrollPosition, With<MenuScroll>>,
+    mut panes: Query<(&mut ScrollPosition, Option<&RelativeCursorPosition>), With<MenuScroll>>,
 ) {
     if matches!(
         menu.page,
-        Page::Settings | Page::Training | Page::Friends | Page::Profile | Page::Servers
+        Page::Settings
+            | Page::Training
+            | Page::Friends
+            | Page::Profile
+            | Page::Servers
+            | Page::Pause
+            | Page::Store
     ) && menu.capture.is_none()
         && menu.edit.is_none()
         && scroll.delta.y != 0.0
     {
-        for mut pane in &mut panes {
+        for (mut pane, cursor) in &mut panes {
+            if menu.page == Page::Pause && !cursor.is_some_and(RelativeCursorPosition::cursor_over)
+            {
+                continue;
+            }
             pane.0.y = (pane.0.y - scroll.delta.y.clamp(-3.0, 3.0) * 38.0).max(0.0);
             if menu.page == Page::Settings {
                 menu.settings_scroll_y = pane.0.y;
-            } else {
+            } else if menu.page != Page::Pause {
                 menu.content_scroll_y = pane.0.y;
             }
         }
@@ -676,7 +723,7 @@ pub fn keyboard(
         return;
     }
     if keys.just_pressed(KeyCode::Enter) && !menu.query.trim().is_empty() {
-        let matches = filtered_maps(&library, &menu.query);
+        let matches = filtered_maps(&library, &menu);
         if let [(index, _)] = matches.as_slice() {
             menu.actions.push(Action::Load(*index));
         }
@@ -743,11 +790,19 @@ pub fn apply_actions(
     for action in actions {
         match action {
             Action::Open(Page::Practice) if game.drill_section().is_some() => {}
+            Action::Open(Page::Maps) => menu.browse_maps(false),
             Action::Open(page) => {
                 if page == Page::Practice {
                     menu.spawn_page = 0;
                 }
                 menu.go(page);
+            }
+            Action::BrowseLocalMaps => menu.browse_maps(true),
+            Action::MapMode(mode) => {
+                menu.map_mode = mode;
+                menu.map_page = 0;
+                menu.reset_content_scroll();
+                menu.refresh();
             }
             Action::Request(MenuRequest::StartLesson(id) | MenuRequest::WatchLesson(id))
                 if game.pending.is_some() || !menu.training.unlocked(id) => {}
@@ -832,6 +887,7 @@ pub fn apply_actions(
                 if let Some(map) = library.entries.get(index) {
                     match library.start_load(map.source.clone()) {
                         Ok(job) => {
+                            requests.write(MenuRequest::EnterLocalMap);
                             game.pending = Some(job);
                             menu.set_status(format!("Opening {}…", map.name));
                         }
@@ -841,7 +897,7 @@ pub fn apply_actions(
                 }
             }
             Action::MapPage(delta) => {
-                let max = filtered_maps(&library, &menu.query)
+                let max = filtered_maps(&library, &menu)
                     .len()
                     .div_ceil(MAPS_PER_PAGE)
                     .saturating_sub(1);
@@ -982,8 +1038,24 @@ pub fn apply_actions(
                 menu.show_online_records = value;
                 menu.dirty = true;
             }
+            Action::EquipAvatar(skin) => {
+                if menu.settings.avatar_skin != skin {
+                    menu.settings.avatar_skin = skin;
+                    menu.save_settings();
+                }
+            }
+            Action::EquipKnife(finish) => {
+                if menu.settings.knife_finish != finish {
+                    menu.settings.knife_finish = finish;
+                    menu.save_settings();
+                }
+            }
             Action::ResetSettings => {
+                let (avatar_skin, knife_finish) =
+                    (menu.settings.avatar_skin, menu.settings.knife_finish);
                 menu.settings = Settings::default();
+                menu.settings.avatar_skin = avatar_skin;
+                menu.settings.knife_finish = knife_finish;
                 menu.save_settings();
             }
             Action::Quit => {
@@ -1036,6 +1108,12 @@ pub fn apply_actions(
     }
 }
 
+#[derive(Default)]
+pub(crate) struct PauseRenderState {
+    icons: Option<menu_pause_board::Icons>,
+    previous: Option<(menu_pause_board::Layout, bool, bool)>,
+}
+
 pub fn render(
     mut commands: Commands,
     mut menu: ResMut<MenuState>,
@@ -1043,13 +1121,34 @@ pub fn render(
     library: Res<MapLibrary>,
     online: Res<Online>,
     roots: Query<Entity, With<UiRoot>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
     mut images: ResMut<Assets<Image>>,
     mut previews: Local<BTreeMap<PathBuf, Handle<Image>>>,
     mut mark: Local<Option<Handle<Image>>>,
+    mut pause_render: Local<PauseRenderState>,
 ) {
-    if !menu.dirty {
+    let board_layout = if menu.page == Page::Pause
+        && game.tutorial_lesson().is_none()
+        && game.drill_section().is_none()
+    {
+        let (width, height) = windows
+            .single()
+            .map_or((1280., 800.), |window| (window.width(), window.height()));
+        menu_pause_board::Layout::new(width, height)
+    } else {
+        None
+    };
+    let pause_board = board_layout.map(|layout| {
+        (
+            layout,
+            game.ghost_enabled(),
+            game.ghost_preparation_progress().is_some(),
+        )
+    });
+    if !menu.dirty && pause_render.previous == pause_board {
         return;
     }
+    pause_render.previous = pause_board;
     menu.dirty = false;
     for root in &roots {
         commands.entity(root).despawn();
@@ -1116,7 +1215,21 @@ pub fn render(
                         Pickable::IGNORE,
                     ));
                 }
-                home(outer, &menu, &game, &library, &online, mark);
+                home(
+                    outer,
+                    &menu,
+                    &game,
+                    &library,
+                    &online,
+                    mark,
+                    board_layout.map_or(520., |layout| layout.left_width),
+                );
+                if let Some(layout) = board_layout {
+                    let icons = pause_render
+                        .icons
+                        .get_or_insert_with(|| menu_pause_board::Icons::new(&mut images));
+                    menu_pause_board::render(outer, &menu, &game, &online, layout, icons);
+                }
                 return;
             }
             if menu.page == Page::Finished {
@@ -1159,7 +1272,11 @@ pub fn render(
                     titlebar(window, &menu);
                     let scrollable = matches!(
                         menu.page,
-                        Page::Training | Page::Friends | Page::Profile | Page::Servers
+                        Page::Training
+                            | Page::Friends
+                            | Page::Profile
+                            | Page::Servers
+                            | Page::Store
                     );
                     let mut contents = window.spawn(Node {
                         flex_direction: FlexDirection::Column,
@@ -1234,24 +1351,31 @@ pub fn render(
                                     records(layout, &menu);
                                 }
                             }
-                            Page::Profile => online_ui::panel(
-                                layout,
-                                OnlinePage::Profile,
-                                &online,
-                                &game.course.name,
-                            ),
+                            Page::Profile => {
+                                if online.viewed_profile.is_none()
+                                    && online.profile_runs.is_none()
+                                    && !online.web_history.visible
+                                {
+                                    link(
+                                        layout,
+                                        "Customize skins and knife",
+                                        Action::Open(Page::Store),
+                                    );
+                                }
+                                online_ui::panel(
+                                    layout,
+                                    OnlinePage::Profile,
+                                    &online,
+                                    &game.course.name,
+                                );
+                            }
                             Page::Friends => online_ui::panel(
                                 layout,
                                 OnlinePage::Friends,
                                 &online,
                                 &game.course.name,
                             ),
-                            Page::Store => online_ui::panel(
-                                layout,
-                                OnlinePage::Store,
-                                &online,
-                                &game.course.name,
-                            ),
+                            Page::Store => menu_cosmetics::render(layout, &menu.settings),
                             Page::Moderation => online_ui::panel(
                                 layout,
                                 OnlinePage::Moderation,
@@ -1329,13 +1453,14 @@ fn home(
     library: &MapLibrary,
     online: &Online,
     mark: Handle<Image>,
+    max_width: f32,
 ) {
     let paused = menu.page == Page::Pause;
     let connected = online.is_connected();
     parent
         .spawn(Node {
             width: percent(100),
-            max_width: px(520),
+            max_width: px(max_width),
             flex_direction: FlexDirection::Column,
             row_gap: px(8),
             ..default()
@@ -1687,19 +1812,25 @@ fn map_library(
     images: &mut Assets<Image>,
     previews: &mut BTreeMap<PathBuf, Handle<Image>>,
 ) {
-    let matches = filtered_maps(library, &menu.query);
+    let matches = filtered_maps(library, menu);
     let pages = matches.len().div_ceil(MAPS_PER_PAGE).max(1);
     let page = menu.map_page.min(pages - 1);
     let next_path = menu_training::next_path_course(menu);
-    title(
-        parent,
-        "MAP LIBRARY",
-        "Choose a course",
-        format!(
-            "{} catalog maps · Original visuals download on first play",
-            library.catalog_count
-        ),
-    );
+    if menu.local_maps_only {
+        title(
+            parent,
+            "SOLO PRACTICE",
+            "Local maps",
+            format!("{} installed {} maps", matches.len(), menu.map_mode.label()),
+        );
+    } else {
+        title(
+            parent,
+            "MAP LIBRARY",
+            "Choose a course",
+            format!("{} {} maps", matches.len(), menu.map_mode.label()),
+        );
+    }
     parent
         .spawn(Node {
             width: percent(100),
@@ -1729,15 +1860,35 @@ fn map_library(
             if !menu.query.is_empty() {
                 button(row, "Clear", Action::ClearSearch, false);
             }
+            for mode in [MapMode::Surf, MapMode::Bhop] {
+                button(
+                    row,
+                    mode.label(),
+                    Action::MapMode(mode),
+                    menu.map_mode == mode,
+                );
+            }
+            if menu.local_maps_only {
+                button(row, "All maps", Action::Open(Page::Maps), false);
+            } else {
+                button(row, "Local maps", Action::BrowseLocalMaps, false);
+            }
             button(row, "Current course", Action::Open(Page::Practice), false);
-            button(row, "Rescan local BSPs", Action::Refresh, false);
-            if let Some(step) = next_path {
+            button(row, "Rescan local maps", Action::Refresh, false);
+            if !menu.local_maps_only
+                && let Some(step) = next_path
+            {
                 menu_training::path_button(row, step);
             }
         });
     let visible = &matches[page * MAPS_PER_PAGE..matches.len().min((page + 1) * MAPS_PER_PAGE)];
     if visible.is_empty() {
-        parent.spawn(text("No maps match this search.", 18., MUTED));
+        let message = if menu.local_maps_only && menu.query.trim().is_empty() {
+            "Add maps with published tiers and authored timer zones, then rescan."
+        } else {
+            "No maps match this search."
+        };
+        parent.spawn(text(message, 18., MUTED));
     }
     for group in visible.chunks(3) {
         parent
@@ -1796,13 +1947,17 @@ fn map_library(
                                     if status == "BUILT IN" {
                                         "DOWNLINE"
                                     } else {
-                                        "SOURCE BSP"
+                                        "MAP"
                                     },
                                     18.,
                                     MINT,
                                 ));
                         }
                         content.spawn((text(&map.name, 19., INK), Pickable::IGNORE));
+                        let tier = map
+                            .tier
+                            .map_or_else(|| "Tier unknown".into(), |tier| format!("Tier {tier}"));
+                        content.spawn((text(tier, 12., MINT), Pickable::IGNORE));
                         content.spawn((text(&map.detail, 12., MUTED), Pickable::IGNORE));
                         content.spawn((text(status, 11., MINT), Pickable::IGNORE));
                     });
@@ -1812,17 +1967,24 @@ fn map_library(
     pager(parent, page, pages, Action::MapPage(-1), Action::MapPage(1));
 }
 
-fn filtered_maps<'a>(library: &'a MapLibrary, query: &str) -> Vec<(usize, &'a MapEntry)> {
-    let query = query.trim().to_lowercase();
+fn filtered_maps<'a>(library: &'a MapLibrary, menu: &MenuState) -> Vec<(usize, &'a MapEntry)> {
+    let query = menu.query.trim().to_lowercase();
+    let tier = query
+        .strip_prefix("tier ")
+        .and_then(|value| value.parse::<u8>().ok());
     library
         .entries
         .iter()
         .enumerate()
+        .filter(|(_, map)| map.tier.is_some())
+        .filter(|(_, map)| map.mode == menu.map_mode)
+        .filter(|(_, map)| !menu.local_maps_only || map.is_local())
         .filter(|(_, map)| {
             query.is_empty()
                 || map.id.to_lowercase().contains(&query)
                 || map.name.to_lowercase().contains(&query)
                 || map.detail.to_lowercase().contains(&query)
+                || tier.is_some_and(|tier| map.tier == Some(tier))
         })
         .collect()
 }
@@ -1862,11 +2024,14 @@ fn practice(parent: &mut ChildSpawnerCommands, menu: &MenuState, game: &Game) {
     parent
         .spawn(Node {
             column_gap: px(10),
+            row_gap: px(4),
+            flex_wrap: FlexWrap::Wrap,
             ..default()
         })
         .with_children(|actions| {
             button(actions, "Main course", Action::Bonus(None), true);
             button(actions, "Choose a map", Action::Open(Page::Maps), false);
+            button(actions, "Local maps", Action::BrowseLocalMaps, false);
             button(actions, "Surf School", Action::Open(Page::Training), false);
             button(actions, "Save position", Action::SavePosition, false);
             button(actions, "Load position", Action::RestorePosition, false);
@@ -2252,6 +2417,52 @@ mod tests {
     use bevy::input::mouse::AccumulatedMouseMotion;
     use bevy_surf::{course::Course, tutorial};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn practice_browses_local_maps_without_catalog_tiles() {
+        let data = std::env::temp_dir().join(format!("surfd-practice-menu-{}", std::process::id()));
+        let mut app = open_surf_school(&data);
+        let mut library = app.world_mut().resource_mut::<MapLibrary>();
+        library.entries.retain(|entry| !entry.is_local());
+        let index = library.entries.len();
+        library.entries.push(MapEntry {
+            id: "local:bhop_easy".into(),
+            name: "bhop_easy".into(),
+            detail: "Source bhop · Local practice".into(),
+            mode: MapMode::Bhop,
+            tier: Some(2),
+            source: crate::library::MapSource::Source(data.join("bhop_easy.bsp")),
+        });
+
+        app.world_mut()
+            .resource_mut::<MenuState>()
+            .go(Page::Practice);
+        app.update();
+        choose_menu_action(&mut app, |action| matches!(action, Action::BrowseLocalMaps));
+        assert_eq!(app.world().resource::<MenuState>().page, Page::Maps);
+        assert!(!has_text(app.world_mut(), "bhop_easy"));
+        choose_menu_action(&mut app, |action| {
+            matches!(action, Action::MapMode(MapMode::Bhop))
+        });
+        assert!(has_text(app.world_mut(), "bhop_easy"));
+        assert!(has_text(app.world_mut(), "Tier 2"));
+        assert!(!has_text(app.world_mut(), "Downline"));
+        assert!(
+            app.world_mut()
+                .query::<&MenuButton>()
+                .iter(app.world())
+                .any(|button| matches!(button.0, Action::Load(candidate) if candidate == index))
+        );
+
+        choose_menu_action(&mut app, |action| {
+            matches!(action, Action::Open(Page::Maps))
+        });
+        assert!(!app.world().resource::<MenuState>().local_maps_only);
+        choose_menu_action(&mut app, |action| {
+            matches!(action, Action::MapMode(MapMode::Surf))
+        });
+        assert!(has_text(app.world_mut(), "Kitsune"));
+    }
 
     #[test]
     fn surf_school_opens_loads_and_advances_through_the_desktop_systems() {

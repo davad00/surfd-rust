@@ -1,4 +1,5 @@
 use bevy_surf::{
+    catalog::MapMode,
     network::{RoomTicketKey, RoomTlsConfig},
     server::{AdminCommand, RoomConfig, RoomControl, RoomServer},
 };
@@ -11,12 +12,13 @@ use std::{
 };
 
 const HELP: &str = "\
-Usage: surf-server [--bind IP:PORT] [--name NAME] [--map MAP_ID]
+Usage: surf-server [--bind IP:PORT] [--name NAME] [--mode surf|bhop] [--map MAP_ID]
                    [--rotation MAP_ID,MAP_ID] [--capacity N]
                    [--map-minutes N] [--vote-seconds N]
                    [--tls-cert PEM --tls-key PEM] [--moderation-file PATH]
 
 The default bind is 127.0.0.1:27165.
+Rooms default to Surf. Bhop rooms require a Bhop start map and rotation.
 Set SURF_ROOM_ID and SURF_ROOM_TICKET_KEY together for a managed room.
 Non-loopback managed rooms require TLS. Join with tls://host:port.
 Press Ctrl+C to stop the room and notify connected players.
@@ -46,6 +48,7 @@ fn run() -> Result<(), String> {
         return Ok(());
     };
     let name = config.name.clone();
+    let mode = config.mode;
     let map = config.map.clone();
     let server =
         RoomServer::bind(config).map_err(|error| format!("Could not start room: {error}"))?;
@@ -53,7 +56,11 @@ fn run() -> Result<(), String> {
     let signal_control = control.clone();
     ctrlc::set_handler(move || signal_control.shutdown())
         .map_err(|error| format!("Could not install the room shutdown handler: {error}"))?;
-    println!("{name} is listening on {} with {map}.", server.local_addr());
+    println!(
+        "{name} ({}) is listening on {} with {map}.",
+        mode.label(),
+        server.local_addr()
+    );
     println!("Enter 'help' for local moderation commands.");
     thread::Builder::new()
         .name("surf-room-console".to_owned())
@@ -66,6 +73,8 @@ fn run() -> Result<(), String> {
 
 fn parse_args() -> Result<Option<RoomConfig>, String> {
     let mut config = RoomConfig::default();
+    let mut room_name = None;
+    let mut rotation_configured = false;
     let mut tls_certificate = std::env::var_os("SURF_ROOM_TLS_CERT").map(PathBuf::from);
     let mut tls_key = std::env::var_os("SURF_ROOM_TLS_KEY").map(PathBuf::from);
     config.moderation_file = std::env::var_os("SURF_ROOM_MODERATION_FILE").map(PathBuf::from);
@@ -83,9 +92,13 @@ fn parse_args() -> Result<Option<RoomConfig>, String> {
                     .parse()
                     .map_err(|_| "Enter a bind address like 127.0.0.1:27165.")?;
             }
-            "--name" => config.name = value,
+            "--name" => room_name = Some(value),
+            "--mode" => {
+                config.mode = MapMode::parse(&value).ok_or("Room mode must be surf or bhop.")?
+            }
             "--map" => config.map = value.trim().to_ascii_lowercase(),
             "--rotation" => {
+                rotation_configured = true;
                 config.rotation = value
                     .split(',')
                     .map(str::trim)
@@ -109,6 +122,10 @@ fn parse_args() -> Result<Option<RoomConfig>, String> {
             _ => return Err(format!("Unknown option {flag}.")),
         }
     }
+    if config.mode == MapMode::Bhop && !rotation_configured {
+        config.rotation.clear();
+    }
+    config.name = room_name.unwrap_or_else(|| format!("Classic {}", config.mode.label()));
     config.managed = match (
         std::env::var("SURF_ROOM_ID"),
         std::env::var("SURF_ROOM_TICKET_KEY"),

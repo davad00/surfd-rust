@@ -1,6 +1,85 @@
 use std::sync::OnceLock;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MapMode {
+    #[default]
+    Surf,
+    Bhop,
+}
+
+impl MapMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Surf => "surf",
+            Self::Bhop => "bhop",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Surf => "Surf",
+            Self::Bhop => "Bhop",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        [Self::Surf, Self::Bhop]
+            .into_iter()
+            .find(|mode| mode.as_str().eq_ignore_ascii_case(value))
+    }
+
+    pub fn from_map_name(name: &str) -> Self {
+        find(name).map_or_else(
+            || {
+                if name
+                    .get(..5)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("bhop_"))
+                {
+                    Self::Bhop
+                } else {
+                    Self::Surf
+                }
+            },
+            |entry| entry.mode,
+        )
+    }
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceBspEntry {
+    pub bsp_sha256: String,
+    pub timer_sha256: String,
+}
+
+impl SourceBspEntry {
+    pub fn board_revision(&self) -> String {
+        let mut digest = Sha256::new();
+        digest.update(b"surfd-ranked-source-v1\0");
+        digest.update(self.bsp_sha256.as_bytes());
+        digest.update(self.timer_sha256.as_bytes());
+        format!("{:x}", digest.finalize())
+    }
+
+    pub fn bonus_board_revision(&self, number: u16) -> Option<String> {
+        let mut timer = [0_u8; 32];
+        if number == 0 || self.timer_sha256.len() != 64 || !self.timer_sha256.is_ascii() {
+            return None;
+        }
+        for (index, byte) in timer.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&self.timer_sha256[index * 2..index * 2 + 2], 16).ok()?;
+        }
+        Some(format!(
+            "{}:bonus:{number}:{:x}",
+            self.board_revision(),
+            Sha256::digest(timer)
+        ))
+    }
+}
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -9,20 +88,30 @@ pub struct CatalogEntry {
     pub slug: String,
     pub name: String,
     pub author: String,
+    #[serde(default)]
+    pub mode: MapMode,
     pub tier: Option<u8>,
     #[serde(rename = "type")]
     pub layout: String,
+    #[serde(default)]
     pub geometry: String,
     pub visual: Option<String>,
     pub bonus_pack: Option<String>,
     pub bonuses: usize,
+    pub source_bsp: Option<SourceBspEntry>,
 }
 
 pub fn entries() -> &'static [CatalogEntry] {
     static ENTRIES: OnceLock<Vec<CatalogEntry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
-        serde_json::from_str(include_str!("../assets/surfd-catalog.json"))
-            .expect("valid bundled map catalog")
+        let mut entries: Vec<CatalogEntry> =
+            serde_json::from_str(include_str!("../assets/surfd-catalog.json"))
+                .expect("valid bundled map catalog");
+        let source: Vec<CatalogEntry> =
+            serde_json::from_str(include_str!("../assets/ranked-source-catalog.json"))
+                .expect("valid bundled Source map catalog");
+        entries.extend(source);
+        entries
     })
 }
 
@@ -42,6 +131,9 @@ pub fn revision(reference: &str) -> Option<&str> {
 impl CatalogEntry {
     #[cfg(feature = "records-service")]
     pub(crate) fn native_board_revision(&self) -> Option<String> {
+        if let Some(source) = &self.source_bsp {
+            return Some(source.board_revision());
+        }
         let geometry = revision(&self.geometry)?;
         Some(crate::rules::PhysicsProfile::Surfd.revision(geometry.to_owned()))
     }
@@ -107,6 +199,12 @@ pub mod files {
             return Ok(Course::practice());
         }
         let entry = find(map).ok_or("Unknown ranked map")?;
+        if entry.source_bsp.is_some() {
+            let bsp = root.join(format!("{}.bsp", entry.slug));
+            let compressed = bsp.with_extension("bsp.gz");
+            let path = if bsp.is_file() { bsp } else { compressed };
+            return crate::source_bsp::load_ranked_collision(&path, entry);
+        }
         let directory = cache_directory(root, &entry.slug);
         fs::create_dir_all(&directory)
             .map_err(|error| format!("Could not create map cache: {error}"))?;

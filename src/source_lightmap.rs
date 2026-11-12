@@ -9,7 +9,7 @@ const PADDING: usize = 2;
 const MAX_PAGES: usize = 32;
 
 #[derive(Clone, Copy)]
-pub(super) struct FaceLightmap {
+pub(crate) struct FaceLightmap {
     pub offset: i32,
     pub mins: [i32; 2],
     pub extents: [i32; 2],
@@ -73,7 +73,7 @@ impl Page {
     }
 }
 
-pub(super) struct Lightmaps<'a> {
+pub(crate) struct Lightmaps<'a> {
     data: &'a [u8],
     pages: Vec<Page>,
     tiles: HashMap<(usize, usize, usize), Tile>,
@@ -81,6 +81,12 @@ pub(super) struct Lightmaps<'a> {
 
 impl<'a> Lightmaps<'a> {
     pub fn new(data: &'a [u8]) -> Self {
+        // Fullbright maps can still contain a placeholder lighting lump.
+        let data = if data.chunks_exact(4).any(|sample| sample[..3] != [0; 3]) {
+            data
+        } else {
+            &[]
+        };
         Self {
             data,
             pages: Vec::new(),
@@ -180,6 +186,13 @@ impl<'a> Lightmaps<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entirely_black_lighting_uses_fullbright_materials() {
+        let mut maps = Lightmaps::new(&[0; 8]);
+        assert!(maps.tile(0, 2, 1).is_none());
+        assert!(maps.pages.is_empty());
+    }
 
     #[test]
     fn baked_light_uses_linear_color_and_texel_center_uvs() {

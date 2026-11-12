@@ -1109,6 +1109,8 @@ impl Collision {
             catalog_revision: None,
             bonus_routes: Vec::new(),
             map_triggers: MapTriggers {
+                source_world_limit: None,
+                source_mode: None,
                 spawn_pitch: Some(initial.pitch),
                 spawn_source_yaw: initial.source_yaw_degrees,
                 brush_index: Default::default(),
@@ -1137,6 +1139,7 @@ impl Collision {
                 conveyors,
                 recorded_brushes,
                 source_version: self.version.clone(),
+                source_timer: None,
                 bonus_pack_sha256: None,
                 bonus_rules: HashMap::new(),
                 movement_volumes: movement_volumes(&self.ladder_brush_ids, &self.water_zones)?,

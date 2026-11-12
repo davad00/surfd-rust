@@ -59,6 +59,12 @@ impl Default for MovementRules {
 
 impl MovementRules {
     pub fn for_course(course: &Course) -> Self {
+        if let Some(timer) = &course.map_triggers.source_timer {
+            return Self {
+                max_velocity: timer.max_velocity.unwrap_or(Self::default().max_velocity),
+                ..Self::default()
+            };
+        }
         let max_velocity = match course.name.as_str() {
             "surf_aircontrol_ksf"
             | "surf_summit"

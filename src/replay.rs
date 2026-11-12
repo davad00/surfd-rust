@@ -46,6 +46,12 @@ impl TickCommand {
                     && difference.min(turn - difference) <= 8.0 * f64::from(f32::EPSILON)
             })
     }
+
+    fn has_ranked_movement_keys(self) -> bool {
+        // The desktop input system records both movement axes as digital key states.
+        let valid_axis = |axis| axis == -1.0 || axis == 0.0 || axis == 1.0;
+        valid_axis(self.input.forward) && valid_axis(self.input.strafe)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -57,6 +63,29 @@ pub struct RunReplay {
     pub bonus: Option<u16>,
     pub options: RunOptions,
     pub commands: Vec<TickCommand>,
+}
+
+impl RunReplay {
+    #[cfg(feature = "records-service")]
+    pub(crate) fn has_distinct_aim_pattern(&self) -> bool {
+        // Straight runs and fixed-rate keyboard turns can legitimately produce
+        // identical inputs. Require varied aim before enforcing replay ownership.
+        const DISTINCT_TURNS: usize = 16;
+        let mut turns = [0_i32; DISTINCT_TURNS];
+        let mut count = 0;
+        for pair in self.commands.windows(2) {
+            let delta = (pair[1].input.yaw - pair[0].input.yaw + PI).rem_euclid(TAU) - PI;
+            let turn = (delta * 10_000.0).round() as i32;
+            if turn != 0 && !turns[..count].contains(&turn) {
+                turns[count] = turn;
+                count += 1;
+                if count == DISTINCT_TURNS {
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -401,6 +430,9 @@ pub fn verify_ranked(course: &Course, replay: &RunReplay) -> Result<VerifiedRun,
         return Err(ReplayError::Unranked);
     }
     for (index, command) in replay.commands.iter().enumerate() {
+        if !command.has_ranked_movement_keys() {
+            return Err(ReplayError::Command(index));
+        }
         session.tick_command(course, *command);
         if session.phase == RunPhase::Finished && index + 1 != replay.commands.len() {
             return Err(ReplayError::TrailingCommands);
@@ -542,6 +574,13 @@ mod tests {
         let mut bad = decoded.clone();
         bad.commands[0].input.strafe = 100.0;
         assert_eq!(verify_ranked(&course, &bad), Err(ReplayError::Command(0)));
+        let mut fractional = decoded.clone();
+        fractional.commands[0].input.forward = 0.75;
+        assert!(Playback::new(&course, fractional.clone()).is_ok());
+        assert_eq!(
+            verify_ranked(&course, &fractional),
+            Err(ReplayError::Command(0))
+        );
         let mut bad = decoded.clone();
         bad.commands.push(decoded.commands[0]);
         assert_eq!(

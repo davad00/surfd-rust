@@ -225,16 +225,32 @@ pub enum ZoneKind {
     Finish,
     Checkpoint(u16),
     Reset,
-    Teleport { position: Vec3, yaw: Option<f32> },
-    StageTeleport { position: Vec3, yaw: Option<f32> },
+    Teleport {
+        position: Vec3,
+        yaw: Option<f32>,
+    },
+    StageTeleport {
+        position: Vec3,
+        yaw: Option<f32>,
+    },
+    MomentumTeleport {
+        position: Vec3,
+        yaw: Option<f32>,
+        keep_downward_velocity: bool,
+    },
     AuthoredTeleport(Box<AuthoredTeleport>),
-    Push { index: usize, velocity: Vec3 },
+    Push {
+        index: usize,
+        velocity: Vec3,
+    },
     NoJump(f32),
     PlayerOutput(Box<PlayerOutputZone>),
 }
 
 #[derive(Default)]
 pub struct MapTriggers {
+    pub(crate) source_world_limit: Option<f32>,
+    pub(crate) source_mode: Option<crate::catalog::MapMode>,
     pub spawn_pitch: Option<f32>,
     pub(crate) spawn_source_yaw: Option<f64>,
     pub(crate) brush_index: OnceLock<Option<Arc<BrushIndex>>>,
@@ -258,6 +274,7 @@ pub struct MapTriggers {
     pub(crate) bonus_pack_sha256: Option<String>,
     pub(crate) bonus_rules: HashMap<u16, BonusRules>,
     pub(crate) movement_volumes: MovementVolumes,
+    pub(crate) source_timer: Option<crate::source_bsp::SourceTimer>,
 }
 
 #[derive(Default)]
@@ -431,6 +448,24 @@ impl Brush {
 }
 
 impl Course {
+    pub fn imported_source_mode(&self) -> Option<&'static str> {
+        self.map_triggers
+            .source_timer
+            .as_ref()
+            .map(|timer| timer.mode().as_str())
+    }
+
+    pub fn map_mode(&self) -> crate::catalog::MapMode {
+        self.map_triggers.source_timer.as_ref().map_or_else(
+            || {
+                self.map_triggers
+                    .source_mode
+                    .unwrap_or_else(|| crate::catalog::MapMode::from_map_name(&self.name))
+            },
+            |timer| timer.mode(),
+        )
+    }
+
     pub(crate) fn collision_index(&self) -> Option<Arc<BrushIndex>> {
         let build = || BrushIndex::new(&self.brushes).map(Arc::new);
         match self.map_triggers.brush_index.get_or_init(build) {
@@ -598,6 +633,9 @@ impl Course {
         };
         let mut digest = Sha256::new();
         digest.update(b"surf-local-course-v2");
+        if let Some(timer) = &self.map_triggers.source_timer {
+            digest.update(timer.revision);
+        }
         if profile == PhysicsProfile::SurfdBonus
             && let Some(hash) = &self.map_triggers.bonus_pack_sha256
         {
@@ -685,6 +723,21 @@ impl Course {
                     }]);
                     hash_vec(&mut digest, position);
                     digest.update([u8::from(yaw.is_some())]);
+                    if let Some(yaw) = yaw {
+                        digest.update(yaw.to_le_bytes());
+                    }
+                }
+                ZoneKind::MomentumTeleport {
+                    position,
+                    yaw,
+                    keep_downward_velocity,
+                } => {
+                    digest.update([
+                        11,
+                        u8::from(keep_downward_velocity),
+                        u8::from(yaw.is_some()),
+                    ]);
+                    hash_vec(&mut digest, position);
                     if let Some(yaw) = yaw {
                         digest.update(yaw.to_le_bytes());
                     }

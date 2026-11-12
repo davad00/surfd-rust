@@ -15,6 +15,7 @@ use bevy::input::{ButtonState, keyboard::KeyboardInput, mouse::AccumulatedMouseM
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use bevy_surf::{
+    catalog::MapMode,
     network::{
         self, Client, ClientMessage, PlayerInfo, PlayerState, RoomIdentity, RoomInfo,
         RoomJoinTicket, RoomModeration, RoomReportPage, ServerEvent, VoteInfo,
@@ -42,6 +43,8 @@ use crate::{
     view::Game,
 };
 
+mod pause_board;
+use pause_board::{PauseBoard, ReplayKind as PauseReplayKind};
 mod ranked_attempt;
 use ranked_attempt::{AttemptProgress, RankedAttempt};
 mod ranked_journal;
@@ -63,7 +66,6 @@ pub enum OnlinePage {
     Records,
     Profile,
     Friends,
-    Store,
     Moderation,
 }
 
@@ -94,7 +96,10 @@ pub enum Action {
     Leave,
     Chat,
     Nominate,
-    Vote(String),
+    Vote {
+        generation: u64,
+        choice: u8,
+    },
     RockTheVote,
     Extend,
     Spectate(Option<u64>),
@@ -106,8 +111,14 @@ pub enum Action {
     RefreshBoard,
     StageRecords,
     StageBoard(u16),
-    Progression,
+    Progression(MapMode),
     RecordsPage(usize),
+    PauseFullBoard,
+    PauseReplay {
+        generation: u64,
+        id: String,
+        ghost: bool,
+    },
     Watch(String),
     WatchStage(String, StageSpan),
     Ghost(String),
@@ -165,8 +176,8 @@ impl ServerRow {
         }
     }
 
-    fn has_space(&self) -> bool {
-        matches!(&self.availability, RoomAvailability::Online { info, .. } if info.players < info.capacity)
+    fn has_space(&self, mode: MapMode) -> bool {
+        matches!(&self.availability, RoomAvailability::Online { info, .. } if info.mode == mode && info.players < info.capacity)
     }
 }
 
@@ -190,7 +201,15 @@ enum Reply {
     Playtime(i64, Result<Playtime, String>),
     Presence(i64, Result<Playtime, String>),
     Attempt(u64, u8, Result<Attempt, api::RetryableRequestFailure>),
-    Board(Result<Board, String>),
+    Board(u64, Result<Board, String>),
+    PauseBoard(u64, Result<Board, String>),
+    PauseReplay {
+        generation: u64,
+        request: u64,
+        id: String,
+        kind: PauseReplayKind,
+        result: Result<RunReplay, String>,
+    },
     Progression(Result<Progression, String>),
     Stages(Result<(StageBests, Option<StageBests>), String>),
     Replay(bool, Option<StageSpan>, Result<RunReplay, String>),
@@ -198,6 +217,7 @@ enum Reply {
         course_version: u64,
         bonus: Option<u16>,
         watch: bool,
+        pause_generation: Option<u64>,
         result: Result<ReferenceGhost, String>,
     },
     Submitted(
@@ -222,6 +242,8 @@ impl Reply {
                 | Self::Attempt(..)
                 | Self::Submitted(..)
                 | Self::RankedJournalLoaded(..)
+                | Self::PauseBoard(..)
+                | Self::PauseReplay { .. }
                 | Self::Replay(..)
                 | Self::ReferenceGhost { .. }
         )
@@ -359,6 +381,8 @@ pub struct Online {
     pub vote: Option<VoteInfo>,
     room_map_deadline: Option<Instant>,
     room_vote_deadline: Option<Instant>,
+    vote_generation: u64,
+    legacy_vote_choice: Option<u8>,
     pub spectating: Option<u64>,
     pub messages: VecDeque<String>,
     pub servers: Vec<ServerRow>,
@@ -368,10 +392,12 @@ pub struct Online {
     pub status: String,
     pub record_status: String,
     pub board: Option<Board>,
+    pause_board: PauseBoard,
     pub stage_records: Option<StageBests>,
     pub stage_bests: Option<StageBests>,
     pub show_stage_records: bool,
     pub show_progression: bool,
+    pub progression_mode: MapMode,
     pub progression: Option<Progression>,
     pub board_page: usize,
     pub profile: Option<Profile>,
@@ -424,6 +450,7 @@ pub struct Online {
     account_busy: bool,
     provider_sign_in: Option<Arc<AtomicBool>>,
     board_busy: bool,
+    board_generation: u64,
     replay_busy: bool,
     social_busy: bool,
     presence_busy: bool,
@@ -464,6 +491,8 @@ impl Default for Online {
             vote: None,
             room_map_deadline: None,
             room_vote_deadline: None,
+            vote_generation: 0,
+            legacy_vote_choice: None,
             spectating: None,
             messages: VecDeque::new(),
             servers: Vec::new(),
@@ -476,10 +505,12 @@ impl Default for Online {
             status: "Choose a server or enter its address.".into(),
             record_status: String::new(),
             board: None,
+            pause_board: PauseBoard::default(),
             stage_records: None,
             stage_bests: None,
             show_stage_records: false,
             show_progression: false,
+            progression_mode: MapMode::Surf,
             progression: None,
             board_page: 0,
             profile: None,
@@ -532,6 +563,7 @@ impl Default for Online {
             account_busy: false,
             provider_sign_in: None,
             board_busy: false,
+            board_generation: 0,
             replay_busy: false,
             social_busy: false,
             presence_busy: false,
@@ -683,7 +715,53 @@ impl Online {
         (seconds != 0).then_some((vote, seconds))
     }
 
+    pub(crate) fn selected_vote_choice(&self, vote: &VoteInfo) -> Option<u8> {
+        if vote.vote_id.is_some() {
+            vote.selected
+        } else {
+            self.legacy_vote_choice
+        }
+    }
+
+    pub(crate) fn vote_action(&self, choice: u8, now: Instant) -> Option<Action> {
+        let generation = self.vote_generation;
+        self.vote_choice(generation, choice, now)?;
+        Some(Action::Vote { generation, choice })
+    }
+
+    fn vote_choice(&self, generation: u64, choice: u8, now: Instant) -> Option<(&VoteInfo, &str)> {
+        if generation != self.vote_generation || self.managed_guest() {
+            return None;
+        }
+        let (vote, _) = self.active_vote(now)?;
+        let index = usize::from(choice.checked_sub(1)?);
+        if index >= NUMBERED_VOTE_CHOICES {
+            return None;
+        }
+        Some((vote, vote.maps.get(index)?.as_str()))
+    }
+
+    fn vote_message(&self, generation: u64, choice: u8, now: Instant) -> Option<ClientMessage> {
+        let (vote, map) = self.vote_choice(generation, choice, now)?;
+        Some(match vote.vote_id {
+            Some(vote_id) => ClientMessage::VoteFor { vote_id, choice },
+            None => ClientMessage::Vote(map.to_owned()),
+        })
+    }
+
     fn receive_vote(&mut self, vote: VoteInfo, now: Instant) {
+        if !vote.open
+            || self.vote.as_ref().is_none_or(|previous| {
+                !previous.open
+                    || previous.vote_id != vote.vote_id
+                    || previous.kind != vote.kind
+                    || previous.runoff != vote.runoff
+                    || previous.maps != vote.maps
+            })
+        {
+            self.vote_generation = self.vote_generation.wrapping_add(1);
+            self.legacy_vote_choice = None;
+        }
         if let Some(ms) = vote.map_remaining_ms {
             self.room_map_deadline = now.checked_add(Duration::from_millis(ms));
         }
@@ -702,12 +780,14 @@ impl Online {
         self.vote = None;
         self.room_map_deadline = None;
         self.room_vote_deadline = None;
+        self.vote_generation = self.vote_generation.wrapping_add(1);
+        self.legacy_vote_choice = None;
     }
 
     pub fn show_players(&self, game: &Game) -> bool {
         self.room
             .as_ref()
-            .is_some_and(|room| room.map.eq_ignore_ascii_case(&game.course.name))
+            .is_some_and(|room| room_course_matches(room, &game.course))
             && game.pending.is_none()
     }
 
@@ -836,8 +916,10 @@ impl Online {
         {
             return;
         }
-        let (Some(room_id), Some(token)) = (
-            self.room.as_ref().and_then(|room| room.room_id.clone()),
+        let (Some((room_id, mode)), Some(token)) = (
+            self.room
+                .as_ref()
+                .and_then(|room| room.room_id.clone().map(|id| (id, room.mode))),
             self.token.clone(),
         ) else {
             return;
@@ -845,6 +927,7 @@ impl Online {
         let request = ManagedRoomEntry {
             room_id,
             address: self.address.clone(),
+            mode,
         };
         let endpoint = self.endpoint.clone();
         let generation = self.connection_generation;
@@ -1328,6 +1411,104 @@ impl Online {
         true
     }
 
+    pub(crate) fn pause_board(&self) -> Option<&Board> {
+        self.pause_board.board()
+    }
+
+    pub(crate) fn pause_board_status(&self) -> &str {
+        self.pause_board.status()
+    }
+
+    pub(crate) fn pause_ghost_id(&self) -> Option<&str> {
+        self.pause_board.ghost_id.as_deref()
+    }
+
+    pub(crate) fn pause_replay_busy(&self) -> bool {
+        self.pause_board.replay_pending() || self.replay_busy || self.profile_replay_busy
+    }
+
+    pub(crate) fn pause_replay_action(&self, id: &str, ghost: bool) -> Action {
+        Action::PauseReplay {
+            generation: self.pause_board.generation(),
+            id: id.to_owned(),
+            ghost,
+        }
+    }
+
+    fn observe_pause_board(&mut self, game: &Game, menu: &mut MenuState) {
+        if !game.ghost_enabled() {
+            self.pause_board.ghost_id = None;
+        }
+        let (changed, request) =
+            self.pause_board
+                .observe(game, menu.page, &self.records_origin, Instant::now());
+        if let Some((generation, route)) = request {
+            let endpoint = self.records_origin.clone();
+            self.background(move || {
+                Reply::PauseBoard(generation, api::get(&endpoint, &route, None))
+            });
+        }
+        if changed && menu.page == Page::Pause {
+            menu.refresh();
+        }
+    }
+
+    fn request_pause_replay(&mut self, generation: u64, id: String, kind: PauseReplayKind) {
+        if self.pause_replay_busy() {
+            return;
+        }
+        let Some(request) = self.pause_board.start_replay(generation, &id, kind) else {
+            return;
+        };
+        let endpoint = self.records_origin.clone();
+        self.background(move || Reply::PauseReplay {
+            generation,
+            request,
+            result: api::get(&endpoint, &format!("/v1/replays/{id}"), None),
+            id,
+            kind,
+        });
+    }
+
+    fn request_pause_record_replay(&mut self, generation: u64, watch: bool) -> bool {
+        let id = self
+            .pause_board()
+            .and_then(|board| board.rows.iter().find(|row| !row.id.is_empty()))
+            .map(|row| row.id.clone());
+        if let Some(id) = id {
+            let kind = if watch {
+                PauseReplayKind::RecordRoute
+            } else {
+                PauseReplayKind::RecordGhost
+            };
+            self.request_pause_replay(generation, id, kind);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn open_full_pause_board(&mut self, game: &Game, menu: &mut MenuState) {
+        if menu.page != Page::Pause || game.pending.is_some() {
+            return;
+        }
+        self.board = self.pause_board().cloned();
+        self.board_generation = self.board_generation.wrapping_add(1);
+        self.board_busy = false;
+        self.show_stage_records = false;
+        self.show_progression = false;
+        self.board_page = 0;
+        self.record_status.clear();
+        if self.board.is_none() {
+            if game.course.board_revision(game.selected_bonus()).is_some() {
+                self.refresh_board(game, None);
+            } else {
+                self.record_status = "Records are unavailable for this route.".into();
+            }
+        }
+        menu.open_verified_records();
+    }
+
     fn refresh_board(&mut self, game: &Game, stage: Option<u16>) {
         if self.board_busy {
             return;
@@ -1336,6 +1517,8 @@ impl Online {
         self.show_progression = false;
         self.board_page = 0;
         self.board_busy = true;
+        self.board_generation = self.board_generation.wrapping_add(1);
+        let generation = self.board_generation;
         self.record_status = "Loading verified records…".into();
         let endpoint = self.endpoint.clone();
         let mut route = format!(
@@ -1346,7 +1529,7 @@ impl Online {
         if let Some(stage) = stage {
             route.push_str(&format!("/{stage}"));
         }
-        self.background(move || Reply::Board(api::get(&endpoint, &route, None)));
+        self.background(move || Reply::Board(generation, api::get(&endpoint, &route, None)));
     }
 
     fn refresh_stages(&mut self, game: &Game) {
@@ -1441,20 +1624,24 @@ impl Online {
         });
     }
 
-    fn refresh_progression(&mut self) {
+    fn refresh_progression(&mut self, mode: MapMode) {
         if self.board_busy {
             return;
         }
         self.show_stage_records = false;
         self.show_progression = true;
+        self.progression_mode = mode;
+        self.progression = None;
         self.board_page = 0;
         self.board_busy = true;
-        self.record_status = "Loading player rankings…".into();
+        self.record_status = format!("Loading {} rankings…", mode.label());
         let endpoint = self.endpoint.clone();
         let token = self.token.clone();
-        self.background(move || {
-            Reply::Progression(api::get(&endpoint, "/v1/progression", token.as_deref()))
-        });
+        let route = match mode {
+            MapMode::Surf => "/v1/progression",
+            MapMode::Bhop => "/v1/progression/bhop",
+        };
+        self.background(move || Reply::Progression(api::get(&endpoint, route, token.as_deref())));
     }
 
     fn ensure_attempt(&mut self, game: &Game, page: Page) {
@@ -1788,11 +1975,16 @@ impl Online {
                         warn!("Could not clear a completed ranked save: {error}");
                     }
                     let result = &receipt.submission;
-                    if let Some(stats) = result.progression {
+                    if result.progression.is_some() || result.bhop_progression.is_some() {
                         if receipt.restored || *requested != generation {
                             refresh_profile = true;
                         } else {
-                            profile.progression = stats;
+                            if let Some(stats) = result.progression {
+                                profile.progression = stats;
+                            }
+                            if let Some(stats) = result.bhop_progression {
+                                profile.bhop_progression = stats;
+                            }
                             self.room_refresh.expedite(Instant::now());
                         }
                     }
@@ -1858,8 +2050,22 @@ pub fn keyboard(
     mut online: ResMut<Online>,
     mut menu: ResMut<MenuState>,
     mut input: MessageReader<KeyboardInput>,
-    keys: Res<ButtonInput<KeyCode>>,
+    mut vote_input: MessageReader<KeyboardInput>,
+    mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut held_vote_keys: Local<Vec<KeyCode>>,
 ) {
+    if held_vote_keys.is_empty() {
+        vote_input.clear();
+    } else {
+        for event in vote_input.read() {
+            if event.state == ButtonState::Released || !event.repeat {
+                held_vote_keys.retain(|key| *key != event.key_code);
+            }
+        }
+        for &key in held_vote_keys.iter() {
+            keys.reset(key);
+        }
+    }
     online.consumed_input = false;
     if online.field.is_none()
         && online.is_connected()
@@ -1872,22 +2078,23 @@ pub fn keyboard(
         return;
     }
     let Some(field) = online.field else {
-        if menu.page == Page::Playing
-            && !online.managed_guest()
-            && let Some(index) = vote_key(&keys)
-            && let Some((vote, _)) = online.active_vote(Instant::now())
-            && let Some(map) = vote.maps.get(index).cloned()
+        if matches!(menu.page, Page::Playing | Page::Players)
+            && online.is_connected()
+            && let Some((key, choice)) = vote_key(&keys)
+            && let Some(action) = online.vote_action(choice, Instant::now())
         {
-            online.actions.push(Action::Vote(map));
+            // Consume just this digit until release so a custom bind cannot also fire.
+            held_vote_keys.push(key);
+            keys.reset(key);
+            online.actions.push(action);
         }
         input.clear();
         return;
     };
     online.consumed_input = true;
-    for event in input
-        .read()
-        .filter(|event| event.state == ButtonState::Pressed)
-    {
+    for event in input.read().filter(|event| {
+        event.state == ButtonState::Pressed && !held_vote_keys.contains(&event.key_code)
+    }) {
         match event.key_code {
             KeyCode::Escape | KeyCode::Enter => {
                 online.field = None;
@@ -1932,7 +2139,9 @@ pub fn keyboard(
     }
 }
 
-fn vote_key(keys: &ButtonInput<KeyCode>) -> Option<usize> {
+pub(crate) const NUMBERED_VOTE_CHOICES: usize = 9;
+
+fn vote_key(keys: &ButtonInput<KeyCode>) -> Option<(KeyCode, u8)> {
     if keys.any_pressed([
         KeyCode::AltLeft,
         KeyCode::AltRight,
@@ -1945,7 +2154,7 @@ fn vote_key(keys: &ButtonInput<KeyCode>) -> Option<usize> {
     ]) {
         return None;
     }
-    [
+    let numbers: [_; NUMBERED_VOTE_CHOICES] = [
         (KeyCode::Digit1, KeyCode::Numpad1),
         (KeyCode::Digit2, KeyCode::Numpad2),
         (KeyCode::Digit3, KeyCode::Numpad3),
@@ -1955,9 +2164,16 @@ fn vote_key(keys: &ButtonInput<KeyCode>) -> Option<usize> {
         (KeyCode::Digit7, KeyCode::Numpad7),
         (KeyCode::Digit8, KeyCode::Numpad8),
         (KeyCode::Digit9, KeyCode::Numpad9),
-    ]
-    .into_iter()
-    .position(|(digit, keypad)| keys.just_pressed(digit) || keys.just_pressed(keypad))
+    ];
+    numbers
+        .into_iter()
+        .enumerate()
+        .find_map(|(index, (digit, keypad))| {
+            [digit, keypad]
+                .into_iter()
+                .find(|key| keys.just_pressed(*key))
+                .map(|key| (key, index as u8 + 1))
+        })
 }
 
 fn watch_lesson_demo(
@@ -2014,6 +2230,7 @@ pub fn update(
     mut surfd_clipboard: Local<Option<(u64, String, ClipboardRead)>>,
 ) {
     online.sync_records_origin();
+    online.observe_pause_board(&game, &mut menu);
     online.init_ranked_journal(&library.directory);
     if menu.page != Page::Profile {
         online.cancel_profile_replay();
@@ -2053,6 +2270,10 @@ pub fn update(
                 }
             }
             MenuRequest::LeaveServer => online.actions.push(Action::Leave),
+            MenuRequest::EnterLocalMap => {
+                online.leave();
+                online.field = None;
+            }
             MenuRequest::StartLesson(id) => {
                 let Some(lesson) = tutorial::lesson(id) else {
                     continue;
@@ -2118,16 +2339,51 @@ pub fn update(
                 }
             }
             MenuRequest::WatchReferenceReplay => {
-                if !request_reference_ghost(&mut online, &game, &library, &mut menu, true) {
+                if !request_reference_ghost(&mut online, &game, &library, &mut menu, true, None) {
                     menu.set_status("The original record is unavailable for this course".into());
                 }
             }
             MenuRequest::ToggleGhost => {
                 if game.ghost_enabled() {
                     game.clear_ghost();
-                } else if !request_reference_ghost(&mut online, &game, &library, &mut menu, false) {
+                    online.pause_board.ghost_id = None;
+                } else if !request_reference_ghost(
+                    &mut online,
+                    &game,
+                    &library,
+                    &mut menu,
+                    false,
+                    None,
+                ) {
                     request_native_record_ghost(&mut online, &mut game, &mut menu);
                 }
+            }
+            MenuRequest::PauseRecordGhost | MenuRequest::PauseWatchRecordRoute => {
+                if menu.page != Page::Pause || game.pending.is_some() {
+                    continue;
+                }
+                let watch = matches!(request, MenuRequest::PauseWatchRecordRoute);
+                let generation = online.pause_board.generation();
+                if !watch && game.ghost_enabled() && !online.pause_replay_busy() {
+                    game.clear_ghost();
+                    online.pause_board.ghost_id = None;
+                    online.pause_board.set_replay_status("");
+                } else if !online.pause_replay_busy()
+                    && !request_reference_ghost(
+                        &mut online,
+                        &game,
+                        &library,
+                        &mut menu,
+                        watch,
+                        Some(generation),
+                    )
+                    && !online.request_pause_record_replay(generation, watch)
+                {
+                    online
+                        .pause_board
+                        .set_replay_status("The record route is unavailable.");
+                }
+                menu.refresh();
             }
             MenuRequest::ExportReplay => {
                 if let Some(replay) = game.finished_replay() {
@@ -2261,18 +2517,15 @@ pub fn update(
     }
     if game.pending.is_none()
         && let Some(map) = online.desired_map.take()
+        && let Some(room) = &online.room
     {
-        if map.eq_ignore_ascii_case(&game.course.name) {
+        if room_course_matches(room, &game.course) {
             game.set_bonus(None);
             menu.go(Page::Playing);
         } else {
-            let source = if map.eq_ignore_ascii_case("downline") {
-                Some(MapSource::Downline)
-            } else {
-                library.catalog_source(&map)
-            };
+            let source = library.room_source(&map, room.mode, room.room_id.is_some());
             match source
-                .ok_or_else(|| format!("The server selected an unknown map: {map}"))
+                .ok_or_else(|| format!("{map} is unavailable for this {} room.", room.mode.label()))
                 .and_then(|source| library.start_load(source))
             {
                 Ok(job) => {
@@ -2280,6 +2533,7 @@ pub fn update(
                     menu.set_status(format!("Loading {map}…"));
                 }
                 Err(error) => {
+                    online.leave();
                     online.status = error;
                     menu.go(Page::Servers);
                 }
@@ -2317,6 +2571,7 @@ pub fn update(
             motion,
         }));
     }
+    online.observe_pause_board(&game, &mut menu);
     while let Some(reply) = online.next_reply() {
         match reply {
             Reply::Discovered {
@@ -2332,7 +2587,7 @@ pub fn update(
                         online
                             .servers
                             .iter()
-                            .filter(|row| row.has_space())
+                            .filter(|row| row.has_space(game.course.map_mode()))
                             .take(MAX_QUICK_PLAY_ROOMS)
                             .map(|row| row.address.clone())
                             .collect(),
@@ -2504,26 +2759,91 @@ pub fn update(
                 online.complete_attempt(epoch, number, result);
             }
             Reply::Attempt(..) => {}
-            Reply::Board(result) => {
+            Reply::Board(generation, result) => {
+                if generation != online.board_generation {
+                    continue;
+                }
                 online.board_busy = false;
                 match result {
-                    Ok(board) => {
+                    Ok(board)
+                        if board.map.eq_ignore_ascii_case(&game.course.name)
+                            && board.bonus == game.selected_bonus() =>
+                    {
                         online.board = Some(board);
                         online.record_status.clear();
                     }
+                    Ok(_) => online.record_status.clear(),
                     Err(error) => online.record_status = error,
+                }
+            }
+            Reply::PauseBoard(generation, result) => {
+                if menu.page != Page::Pause
+                    || !online
+                        .pause_board
+                        .accepts_for(generation, &game, &online.records_origin)
+                {
+                    continue;
+                }
+                online.pause_board.complete(generation, result);
+            }
+            Reply::PauseReplay {
+                generation,
+                request,
+                id,
+                kind,
+                result,
+            } => {
+                if menu.page != Page::Pause
+                    || game.pending.is_some()
+                    || !online
+                        .pause_board
+                        .accepts_for(generation, &game, &online.records_origin)
+                    || !online.pause_board.complete_replay(generation, request)
+                {
+                    continue;
+                }
+                let playback = result.and_then(|replay| {
+                    if !replay.map.eq_ignore_ascii_case(&game.course.name)
+                        || replay.bonus != game.selected_bonus()
+                    {
+                        return Err("That replay belongs to a different route.".into());
+                    }
+                    let map = replay.map.clone();
+                    game.play_replay_when(replay, kind.is_ghost(), || {
+                        if matches!(kind, PauseReplayKind::RecordGhost) {
+                            Ok(())
+                        } else {
+                            online.prepare_profile_replay_room(&map)
+                        }
+                    })
+                });
+                match playback {
+                    Ok(()) => {
+                        online.pause_board.set_replay_status("");
+                        if kind.is_ghost() {
+                            online.pause_board.ghost_id =
+                                matches!(kind, PauseReplayKind::Race).then_some(id);
+                        }
+                        if !matches!(kind, PauseReplayKind::RecordGhost) {
+                            menu.go(Page::Playing);
+                        }
+                    }
+                    Err(error) => online.pause_board.set_replay_status(error),
                 }
             }
             Reply::Progression(result) => {
                 online.board_busy = false;
                 match result {
-                    Ok(mut progression) => {
+                    Ok(mut progression) if progression.mode == online.progression_mode => {
                         let owner = online.profile.as_ref().map(|profile| profile.id);
                         if progression.own.as_ref().map(|row| row.account_id) != owner {
                             progression.own = None;
                         }
                         online.progression = Some(progression);
                         online.record_status.clear();
+                    }
+                    Ok(_) => {
+                        online.record_status = "Received rankings for a different mode.".into()
                     }
                     Err(error) => online.record_status = error,
                 }
@@ -2549,6 +2869,9 @@ pub fn update(
                                 Err(error) => menu.set_status(error),
                             }
                         } else {
+                            if ghost {
+                                online.pause_board.ghost_id = None;
+                            }
                             play_replay(&mut game, &mut menu, replay, ghost);
                         }
                     }
@@ -2559,12 +2882,21 @@ pub fn update(
                 course_version,
                 bonus,
                 watch,
+                pause_generation,
                 result,
             } => {
                 online.replay_busy = false;
                 if game.course_version != course_version
                     || game.selected_bonus() != bonus
                     || game.pending.is_some()
+                    || pause_generation.is_some_and(|generation| {
+                        menu.page != Page::Pause
+                            || !online.pause_board.accepts_for(
+                                generation,
+                                &game,
+                                &online.records_origin,
+                            )
+                    })
                 {
                     continue;
                 }
@@ -2578,13 +2910,35 @@ pub fn update(
                         game.set_reference_ghost(track)
                     }
                 });
-                match playback {
-                    Ok(()) if watch => menu.go(Page::Playing),
-                    Ok(()) => menu.set_status("Record ghost loaded".into()),
-                    Err(error) => {
-                        if watch || !request_native_record_ghost(&mut online, &mut game, &mut menu)
-                        {
-                            menu.set_status(error);
+                if let Some(generation) = pause_generation {
+                    match playback {
+                        Ok(()) => {
+                            online.pause_board.set_replay_status("");
+                            if watch {
+                                menu.go(Page::Playing);
+                            } else {
+                                online.pause_board.ghost_id = None;
+                            }
+                        }
+                        Err(error) => {
+                            if !online.request_pause_record_replay(generation, watch) {
+                                online.pause_board.set_replay_status(error);
+                            }
+                        }
+                    }
+                } else {
+                    match playback {
+                        Ok(()) if watch => menu.go(Page::Playing),
+                        Ok(()) => {
+                            online.pause_board.ghost_id = None;
+                            menu.set_status("Record ghost loaded".into());
+                        }
+                        Err(error) => {
+                            if watch
+                                || !request_native_record_ghost(&mut online, &mut game, &mut menu)
+                            {
+                                menu.set_status(error);
+                            }
                         }
                     }
                 }
@@ -2599,6 +2953,7 @@ pub fn update(
                     && profile.id == fresh.id
                 {
                     profile.progression = fresh.progression;
+                    profile.bhop_progression = fresh.bhop_progression;
                     online.room_refresh.expedite(Instant::now());
                 }
             }
@@ -2715,8 +3070,13 @@ fn perform(
                 online.send(ClientMessage::Nominate(name.trim().to_owned()));
             }
         }
-        Action::Vote(map) => {
-            online.send(ClientMessage::Vote(map));
+        Action::Vote { generation, choice } => {
+            if let Some(message) = online.vote_message(generation, choice, Instant::now()) {
+                let legacy = matches!(&message, ClientMessage::Vote(_));
+                if online.send(message) && legacy {
+                    online.legacy_vote_choice = Some(choice);
+                }
+            }
         }
         Action::RockTheVote => {
             online.send(ClientMessage::RockTheVote);
@@ -2761,8 +3121,28 @@ fn perform(
         Action::RefreshBoard => online.refresh_board(game, None),
         Action::StageRecords => online.refresh_stages(game),
         Action::StageBoard(stage) => online.refresh_board(game, Some(stage)),
-        Action::Progression => online.refresh_progression(),
+        Action::Progression(mode) => online.refresh_progression(mode),
         Action::RecordsPage(page) => online.board_page = page,
+        Action::PauseFullBoard => online.open_full_pause_board(game, menu),
+        Action::PauseReplay {
+            generation,
+            id,
+            ghost,
+        } => {
+            if menu.page == Page::Pause
+                && game.pending.is_none()
+                && online
+                    .pause_board
+                    .accepts_for(generation, game, &online.records_origin)
+            {
+                let kind = if ghost {
+                    PauseReplayKind::Race
+                } else {
+                    PauseReplayKind::Watch
+                };
+                online.request_pause_replay(generation, id, kind);
+            }
+        }
         Action::Watch(id) => request_replay(online, id, false, None),
         Action::WatchStage(id, span) => request_replay(online, id, false, Some(span)),
         Action::Ghost(id) => request_replay(online, id, true, None),
@@ -3154,18 +3534,33 @@ fn connect_room(
     });
     let address = registered.map_or(address, |room| room.address.as_str());
     let room = network::discover(address)?;
-    if registered.is_some_and(|entry| Some(entry.room_id.as_str()) != room.room_id.as_deref()) {
-        return Err("The room identity does not match the records service directory.".into());
+    if registered.is_some_and(|entry| {
+        Some(entry.room_id.as_str()) != room.room_id.as_deref() || entry.mode != room.mode
+    }) {
+        return Err(
+            "The room identity or mode does not match the records service directory.".into(),
+        );
     }
     if let Some(room_id) = room.room_id {
         let request = ManagedRoomEntry {
             room_id,
             address: address.to_owned(),
+            mode: room.mode,
         };
         crate::room_check::join_managed_room(endpoint, &request, token)
     } else {
         Client::connect(address, name)
     }
+}
+
+fn room_course_matches(room: &RoomInfo, course: &bevy_surf::course::Course) -> bool {
+    room.mode == course.map_mode()
+        && (room.map.eq_ignore_ascii_case(&course.name)
+            || bevy_surf::catalog::find(&room.map)
+                .is_some_and(|map| map.id.eq_ignore_ascii_case(&course.name)))
+        && (room.room_id.is_none()
+            || room.map.eq_ignore_ascii_case("downline")
+            || course.catalog_revision.is_some())
 }
 
 fn play_replay(game: &mut Game, menu: &mut MenuState, replay: RunReplay, ghost: bool) {
@@ -3193,7 +3588,7 @@ fn play_solo(library: &MapLibrary, game: &mut Game, menu: &mut MenuState) {
 }
 
 fn request_replay(online: &mut Online, id: String, ghost: bool, span: Option<StageSpan>) {
-    if online.replay_busy || online.profile_replay_busy {
+    if online.pause_replay_busy() {
         return;
     }
     online.replay_busy = true;
@@ -3234,6 +3629,7 @@ fn request_reference_ghost(
     library: &MapLibrary,
     menu: &mut MenuState,
     watch: bool,
+    pause_generation: Option<u64>,
 ) -> bool {
     let Some(entry) = bevy_surf::catalog::find(&game.course.name) else {
         return false;
@@ -3261,7 +3657,7 @@ fn request_reference_ghost(
         }
         None => (entry.slug.clone(), format!("{}.json", entry.id)),
     };
-    if online.replay_busy {
+    if online.pause_replay_busy() {
         return true;
     }
     let (directory, converter) = if watch || bonus.is_some() {
@@ -3282,11 +3678,17 @@ fn request_reference_ghost(
     }
     let course_version = game.course_version;
     online.replay_busy = true;
-    menu.set_status(format!("Loading the original {label}…"));
+    let status = format!("Loading the original {label}…");
+    if pause_generation.is_some() {
+        online.pause_board.set_replay_status(status);
+    } else {
+        menu.set_status(status);
+    }
     online.background(move || Reply::ReferenceGhost {
         course_version,
         bonus,
         watch,
+        pause_generation,
         result: (|| {
             if !path.is_file() {
                 let script = script.ok_or("The original replay conversion tool is unavailable")?;
@@ -3453,6 +3855,74 @@ mod tests {
     };
 
     const QUICK_PLAY_FIXTURE_MAP: &str = "quick-play-fixture";
+
+    #[test]
+    fn numbered_room_vote_keys_are_one_based_and_ignore_modifiers() {
+        let mut keys = ButtonInput::default();
+        keys.press(KeyCode::Digit1);
+        assert_eq!(vote_key(&keys), Some((KeyCode::Digit1, 1)));
+        keys.reset_all();
+        keys.press(KeyCode::Numpad9);
+        assert_eq!(vote_key(&keys), Some((KeyCode::Numpad9, 9)));
+        keys.press(KeyCode::ControlLeft);
+        assert_eq!(vote_key(&keys), None);
+    }
+
+    #[test]
+    fn numbered_room_votes_use_server_identity_and_ignore_expired_or_replaced_ballots() {
+        let mut online = Online::default();
+        let now = Instant::now();
+        let vote = |id| {
+            serde_json::from_value::<VoteInfo>(serde_json::json!({
+                "maps": ["surf_boreas", "surf_kitsune"],
+                "nominations": [], "votes": {}, "needed": 2, "open": true,
+                "seconds_left": 15, "rtv": 0, "vote_id": id
+            }))
+            .unwrap()
+        };
+        online.receive_vote(vote(None::<u64>), now);
+        let original = online.vote_generation;
+        assert_eq!(
+            online.vote_message(original, 2, now),
+            Some(ClientMessage::Vote("surf_kitsune".into()))
+        );
+        online.legacy_vote_choice = Some(2);
+        online.receive_vote(vote(None), now);
+        assert_eq!(online.vote_generation, original);
+        assert_eq!(
+            online.selected_vote_choice(online.vote.as_ref().unwrap()),
+            Some(2)
+        );
+
+        online.receive_vote(vote(Some(42)), now);
+        assert_eq!(online.vote_message(original, 2, now), None);
+        let current = online.vote_generation;
+        assert_eq!(
+            online.vote_message(current, 2, now),
+            Some(ClientMessage::VoteFor {
+                vote_id: 42,
+                choice: 2
+            })
+        );
+        assert_eq!(
+            online.selected_vote_choice(online.vote.as_ref().unwrap()),
+            None
+        );
+        let mut confirmed = vote(Some(42));
+        confirmed.selected = Some(1);
+        online.receive_vote(confirmed, now);
+        assert_eq!(
+            online.selected_vote_choice(online.vote.as_ref().unwrap()),
+            Some(1)
+        );
+        assert_eq!(online.vote_generation, current);
+        assert_eq!(online.vote_message(current, 0, now), None);
+        assert_eq!(online.vote_message(current, 3, now), None);
+        assert_eq!(
+            online.vote_message(current, 2, now + Duration::from_secs(15)),
+            None
+        );
+    }
 
     fn online_app(mut online: Online) -> App {
         let library = MapLibrary::read();
@@ -3844,6 +4314,7 @@ mod tests {
                 showcase: Vec::new(),
                 revision: 0,
                 progression: Default::default(),
+                bhop_progression: Default::default(),
             },
         }
     }
@@ -4154,6 +4625,7 @@ mod tests {
                         run_id: Some("saved-run".into()),
                         stage_records: Vec::new(),
                         progression: None,
+                        bhop_progression: None,
                     },
                     restored: false,
                 }),
@@ -4207,6 +4679,126 @@ mod tests {
     }
 
     #[test]
+    fn pause_panel_opens_watch_race_and_record_ghost_in_the_right_game_state() {
+        use bevy_surf::{
+            movement::MoveInput,
+            record_protocol::BoardRow,
+            session::{RunPhase, Session},
+        };
+
+        let course = Course::practice();
+        let mut run = Session::new(&course);
+        for _ in 0..600 {
+            let position = run.player.position;
+            let mut input = MoveInput {
+                yaw: course.spawn_yaw,
+                ..Default::default()
+            };
+            if position.z > -400.0 || position.z < -2100.0 {
+                input.forward = 1.0;
+            } else if position.x > 120.0 || run.player.velocity.x > 28.0 {
+                input.strafe = -1.0;
+            }
+            run.tick(&course, input);
+            if run.phase == RunPhase::Finished {
+                break;
+            }
+        }
+        let replay = run
+            .take_finished_replay(&course)
+            .expect("fixture completed");
+        assert!(bevy_surf::replay::NativeGhost::new(&course, replay.clone()).is_ok());
+
+        for kind in [
+            PauseReplayKind::Watch,
+            PauseReplayKind::Race,
+            PauseReplayKind::RecordGhost,
+        ] {
+            let mut game = Game::new(Course::practice());
+            game.session.player.position.x += 8.0;
+            let position = game.session.player.position;
+            let epoch = game.run_epoch;
+            let mut online = Online::default();
+            let origin = online.records_origin.clone();
+            let (_, request) =
+                online
+                    .pause_board
+                    .observe(&game, Page::Pause, &origin, Instant::now());
+            let (generation, _) = request.unwrap();
+            online.pause_board.complete(
+                generation,
+                Ok(Board {
+                    map: game.course.name.clone(),
+                    bonus: None,
+                    stage: None,
+                    rows: vec![BoardRow {
+                        id: "runner-replay".into(),
+                        name: "Runner".into(),
+                        account_id: Some(1),
+                        time_us: 10_000_000,
+                        splits_us: vec![],
+                        checkpoint_speeds: vec![],
+                        stage_span: None,
+                    }],
+                }),
+            );
+            let mut app = online_app(online);
+            app.insert_resource(game)
+                .init_resource::<Assets<Image>>()
+                .add_systems(Update, crate::menu::render.after(update));
+            app.world_mut().resource_mut::<MenuState>().go(Page::Pause);
+            app.update();
+            let world = app.world_mut();
+            let mut names = world.query::<&Name>();
+            for label in ["Pause leaderboard", "Watch replay", "Race ghost"] {
+                assert!(
+                    names.iter(world).any(|name| name.as_str() == label),
+                    "{label}"
+                );
+            }
+
+            let online = world.resource_mut::<Online>().into_inner();
+            let request = online
+                .pause_board
+                .start_replay(generation, "runner-replay", kind)
+                .unwrap();
+            online
+                .sender
+                .send(PendingReply {
+                    account_generation: online.account_generation,
+                    records_origin: origin,
+                    owner: None,
+                    reply: Reply::PauseReplay {
+                        generation,
+                        request,
+                        kind,
+                        id: "runner-replay".into(),
+                        result: Ok(replay.clone()),
+                    },
+                })
+                .unwrap_or_else(|_| panic!("test response channel is open"));
+            app.update();
+            let menu = app.world().resource::<MenuState>();
+            let game = app.world().resource::<Game>();
+            assert_eq!(
+                menu.page,
+                if matches!(kind, PauseReplayKind::RecordGhost) {
+                    Page::Pause
+                } else {
+                    Page::Playing
+                }
+            );
+            assert_eq!(game.run_epoch, epoch);
+            assert_eq!(game.session.player.position, position);
+            assert_eq!(
+                game.watching_replay(),
+                matches!(kind, PauseReplayKind::Watch)
+            );
+            assert_eq!(game.ghost_preparation_progress().is_some(), kind.is_ghost());
+        }
+    }
+
+    #[test]
     fn profile_replay_loads_its_course_and_leaves_the_current_run_on_error() {
         let (course, replay) = profile_replay_fixture();
         let mut other = course;
@@ -4216,6 +4808,7 @@ mod tests {
         online.room = Some(RoomInfo {
             name: "Test room".into(),
             map: game.course.name.clone(),
+            mode: game.course.map_mode(),
             players: 1,
             capacity: 24,
             room_id: None,
