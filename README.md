@@ -4,6 +4,8 @@ An independent Bevy 0.20 desktop surf game with Rust room and records servers. T
 
 The **Practice → Local maps** list also includes community Source maps with pinned files, tiers, and timing zones. These maps use the desktop's 15 ms movement step. The reference Bhop courses use a 10 ms step, so their original times are kept separate. A local `practice-catalog.json` in the map data directory can add pinned Practice courses. The client downloads each course on first use.
 
+The game uses textures packed in the BSP first, then searches installed Source games. To use assets from another local install, set `SURF_SOURCE_ASSETS` to the folder containing `cstrike` and `hl2`, or to a path-separated list of content folders or VPK indexes. Keep numbered VPK files beside their index. The game uses built-in replacement materials for files it cannot resolve.
+
 ## Windows download
 
 Download `Surfd-Rust-Windows-x64.exe` from [Releases](https://github.com/davad00/surfd-rust/releases) and open it on a Windows x64 PC. The default renderer is DirectX 12. Set `WGPU_BACKEND=vulkan` to use Vulkan. Downline and Surf School are available offline. Catalog maps download on first use. The game stores settings, local progress and its cache in `%LOCALAPPDATA%\Surfd Rust\maps`.
