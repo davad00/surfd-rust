@@ -1,6 +1,9 @@
 use super::*;
 use crate::view::LiveLessonCue;
-use std::{fmt::Write, time::Instant};
+use std::{
+    fmt::{self, Write},
+    time::Instant,
+};
 
 const KITSUNE_STAGES: [&str; 9] = [
     "Red", "Orange", "Yellow", "Green", "Teal", "Blue", "Purple", "Pink", "White",
@@ -508,6 +511,13 @@ pub struct HudStageProgress {
     label: String,
 }
 
+#[derive(Default)]
+pub struct HudText {
+    scratch: String,
+    restart_binding: Option<Binding>,
+    restart_label: String,
+}
+
 pub fn update_hud(
     game: Res<Game>,
     menu: Res<MenuState>,
@@ -521,7 +531,16 @@ pub fn update_hud(
     mut vote_panels: Query<&mut Node, With<online_ui::VotePanel>>,
     mut record_key: Local<HudRecordKey>,
     mut stage_progress: Local<HudStageProgress>,
+    mut hud_text: Local<HudText>,
 ) {
+    if labels.is_empty() && caps.is_empty() && vote_panels.is_empty() {
+        return;
+    }
+    let HudText {
+        scratch,
+        restart_binding,
+        restart_label,
+    } = &mut *hud_text;
     let run = game.displayed_session();
     let options = run.options();
     let lesson = game.tutorial_lesson();
@@ -564,36 +583,35 @@ pub fn update_hud(
         }
     }
     for (label, mut text, mut color) in &mut labels {
-        let value = match label {
+        scratch.clear();
+        let value: &str = match label {
             Label::Notice => {
                 if menu.page == Page::Playing && now >= menu.notice_until {
-                    String::new()
+                    ""
                 } else {
-                    menu.notice.clone()
+                    &menu.notice
                 }
             }
-            Label::Clock => format_time(game.displayed_elapsed()),
+            Label::Clock => {
+                let _ = write!(scratch, "{}", HudTime(game.displayed_elapsed()));
+                scratch.as_str()
+            }
             Label::Mode => {
                 if demo {
-                    "LESSON DEMO".into()
+                    "LESSON DEMO"
                 } else if game.watching_replay() {
-                    "REPLAY".into()
+                    "REPLAY"
                 } else if lesson.is_some() {
-                    "SURF SCHOOL".into()
+                    "SURF SCHOOL"
                 } else if game.practice_name.is_some() {
-                    "PRACTICE".into()
+                    "PRACTICE"
                 } else {
-                    let movement = if options.unrestricted_start {
-                        "UNRESTRICTED START"
-                    } else {
-                        "NORMAL"
-                    };
-                    let jumping = if options.auto_bhop {
-                        "AUTO BHOP"
-                    } else {
-                        "MANUAL BHOP"
-                    };
-                    format!("{movement} + {jumping}")
+                    match (options.unrestricted_start, options.auto_bhop) {
+                        (false, false) => "NORMAL + MANUAL BHOP",
+                        (false, true) => "NORMAL + AUTO BHOP",
+                        (true, false) => "UNRESTRICTED START + MANUAL BHOP",
+                        (true, true) => "UNRESTRICTED START + AUTO BHOP",
+                    }
                 }
             }
             Label::Best => {
@@ -603,15 +621,18 @@ pub fn update_hud(
                     best.map(|run| run.seconds)
                 };
                 let best = run.best.into_iter().chain(local).reduce(f64::min);
-                best.map_or_else(
-                    || "Personal best: —".into(),
-                    |seconds| format!("Personal best: {}", format_time(seconds)),
-                )
+                if let Some(seconds) = best {
+                    let _ = write!(scratch, "Personal best: {}", HudTime(seconds));
+                    scratch.as_str()
+                } else {
+                    "Personal best: —"
+                }
             }
             Label::Speed => {
                 let velocity = run.player.velocity;
                 let speed = f64::from(velocity.x).hypot(f64::from(velocity.z));
-                format!("{:.0} units/s", speed.round())
+                let _ = write!(scratch, "{:.0} units/s", speed.round());
+                scratch.as_str()
             }
             Label::StageProgress => {
                 let progress = game.displayed_stage_progress();
@@ -622,26 +643,34 @@ pub fn update_hud(
                         let _ = write!(stage_progress.label, "Stage {stage}/{total}");
                     }
                 }
-                if text.0 != stage_progress.label {
-                    text.0.clone_from(&stage_progress.label);
-                }
-                continue;
+                &stage_progress.label
             }
             Label::RunStatus => match run.phase {
-                RunPhase::Untimed => game
-                    .practice_name
-                    .as_deref()
-                    .map_or_else(|| "Free surf".into(), |name| format!("Practice  /  {name}")),
-                RunPhase::Ready => "In start zone".into(),
-                RunPhase::Running => run
-                    .selected_bonus()
-                    .map_or_else(String::new, |number| format!("Bonus {number}")),
-                RunPhase::Finished => "Finished".into(),
+                RunPhase::Untimed => {
+                    if let Some(name) = game.practice_name.as_deref() {
+                        let _ = write!(scratch, "Practice  /  {name}");
+                        scratch.as_str()
+                    } else {
+                        "Free surf"
+                    }
+                }
+                RunPhase::Ready => "In start zone",
+                RunPhase::Running => {
+                    if let Some(number) = run.selected_bonus() {
+                        let _ = write!(scratch, "Bonus {number}");
+                    }
+                    scratch.as_str()
+                }
+                RunPhase::Finished => "Finished",
             },
-            Label::Sync => run.strafe_sync().map_or_else(
-                || "Sync —".into(),
-                |sync| format!("Sync {:.1}%", sync * 100.0),
-            ),
+            Label::Sync => {
+                if let Some(sync) = run.strafe_sync() {
+                    let _ = write!(scratch, "Sync {:.1}%", sync * 100.0);
+                    scratch.as_str()
+                } else {
+                    "Sync —"
+                }
+            }
             Label::Route(index) => {
                 let current = if run.phase == RunPhase::Finished {
                     run.checkpoint_count() + 1
@@ -668,68 +697,75 @@ pub fn update_hud(
                     continue;
                 };
                 if let Some(lesson) = lesson {
-                    let value =
-                        lesson_checkpoint_label(lesson, run, index, last_clear, &menu.settings);
-                    if text.0 != value {
-                        text.0 = value;
-                    }
-                    continue;
-                }
-                let split = run.splits[index];
-                let mut label = format!("CHECKPOINT {}  ·  {}", index + 1, format_time(split));
-                if menu.settings.compare_splits {
-                    let stage_start = if index > 0 {
-                        run.splits[index - 1]
-                    } else {
-                        0.0
-                    };
-                    let pb = best.and_then(|best| best.splits.get(index).copied());
-                    let wr = world
-                        .and_then(|row| row.splits_us.get(index).copied())
-                        .map(micros);
-                    let pb_start = best
-                        .and_then(|row| {
-                            index
-                                .checked_sub(1)
-                                .and_then(|i| row.splits.get(i).copied())
-                        })
-                        .unwrap_or(0.0);
-                    let wr_start = world
-                        .and_then(|row| {
-                            index
-                                .checked_sub(1)
-                                .and_then(|i| row.splits_us.get(i).copied())
-                        })
-                        .map(micros)
-                        .unwrap_or(0.0);
-                    label.push_str(&format!(
-                        "\nSTAGE   PB {}    WR {}",
-                        delta(pb.map(|s| split - stage_start - (s - pb_start))),
-                        delta(wr.map(|s| split - stage_start - (s - wr_start)))
-                    ));
-                    label.push_str(&format!(
-                        "\nRUN      PB {}    WR {}",
-                        delta(pb.map(|s| split - s)),
-                        delta(wr.map(|s| split - s))
-                    ));
-                }
-                if menu.settings.compare_speed
-                    && let Some(speed) = run.checkpoint_speeds.get(index)
-                {
-                    let wr_speed = world
-                        .and_then(|row| row.checkpoint_speeds.get(index))
-                        .map_or_else(
-                            || "—".into(),
-                            |reference| format!("{:+.0}", speed - reference),
+                    write_lesson_checkpoint(
+                        scratch,
+                        lesson,
+                        run,
+                        index,
+                        last_clear,
+                        &menu.settings,
+                    );
+                } else {
+                    let split = run.splits[index];
+                    let _ = write!(scratch, "CHECKPOINT {}  ·  {}", index + 1, HudTime(split));
+                    if menu.settings.compare_splits {
+                        let stage_start = if index > 0 {
+                            run.splits[index - 1]
+                        } else {
+                            0.0
+                        };
+                        let pb = best.and_then(|best| best.splits.get(index).copied());
+                        let wr = world
+                            .and_then(|row| row.splits_us.get(index).copied())
+                            .map(micros);
+                        let pb_start = best
+                            .and_then(|row| {
+                                index
+                                    .checked_sub(1)
+                                    .and_then(|i| row.splits.get(i).copied())
+                            })
+                            .unwrap_or(0.0);
+                        let wr_start = world
+                            .and_then(|row| {
+                                index
+                                    .checked_sub(1)
+                                    .and_then(|i| row.splits_us.get(i).copied())
+                            })
+                            .map(micros)
+                            .unwrap_or(0.0);
+                        let _ = write!(
+                            scratch,
+                            "\nSTAGE   PB {}    WR {}",
+                            HudDelta(pb.map(|s| split - stage_start - (s - pb_start))),
+                            HudDelta(wr.map(|s| split - stage_start - (s - wr_start)))
                         );
-                    label.push_str(&format!("\n{speed:.0} units/s   WR {wr_speed}"));
+                        let _ = write!(
+                            scratch,
+                            "\nRUN      PB {}    WR {}",
+                            HudDelta(pb.map(|s| split - s)),
+                            HudDelta(wr.map(|s| split - s))
+                        );
+                    }
+                    if menu.settings.compare_speed
+                        && let Some(speed) = run.checkpoint_speeds.get(index)
+                    {
+                        let _ = write!(scratch, "\n{speed:.0} units/s   WR ");
+                        if let Some(reference) =
+                            world.and_then(|row| row.checkpoint_speeds.get(index))
+                        {
+                            let _ = write!(scratch, "{:+.0}", speed - reference);
+                        } else {
+                            scratch.push('—');
+                        }
+                    }
                 }
-                label
+                scratch.as_str()
             }
             Label::Diagnostics => {
                 let p = run.player.position;
                 let v = run.player.velocity;
-                format!(
+                let _ = write!(
+                    scratch,
                     "pos {:8.1} {:8.1} {:8.1}\nvel {:8.1} {:8.1} {:8.1}\nframe {:5.1} ms",
                     p.x,
                     p.y,
@@ -738,16 +774,22 @@ pub fn update_hud(
                     v.y,
                     v.z,
                     time.delta_secs() * 1000.0
-                )
+                );
+                scratch.as_str()
             }
             Label::Chat => {
                 use crate::online::Field;
-                let mut lines = online
+                let lines = online
                     .messages
                     .iter()
-                    .skip(online.messages.len().saturating_sub(4))
-                    .cloned()
-                    .collect::<Vec<_>>();
+                    .skip(online.messages.len().saturating_sub(4));
+                let has_messages = !online.messages.is_empty();
+                for (index, line) in lines.enumerate() {
+                    if index != 0 {
+                        scratch.push('\n');
+                    }
+                    scratch.push_str(line);
+                }
                 if online.field == Some(Field::Chat) {
                     let input = online.field_value(Field::Chat);
                     let hint = if input.is_empty() {
@@ -759,25 +801,31 @@ pub fn update_hud(
                     } else {
                         input
                     };
-                    lines.push(format!("{hint}▏"));
+                    if has_messages {
+                        scratch.push('\n');
+                    }
+                    scratch.push_str(hint);
+                    scratch.push('▏');
                 }
-                lines.join("\n")
+                scratch.as_str()
             }
-            Label::RoomMapClock => online.room_map_time(now).unwrap_or_default(),
+            Label::RoomMapClock => {
+                if let Some(value) = online.room_map_time(now) {
+                    scratch.push_str(&value);
+                }
+                scratch.as_str()
+            }
             Label::RoomVoteClock => {
-                vote_seconds.map_or_else(String::new, |seconds| format!("{seconds}s"))
-            }
-            Label::Ranked => online.record_status.clone(),
-            Label::LessonHeading => {
-                let heading = active_section
-                    .map(|(_, section)| section.name)
-                    .or_else(|| lesson.map(|lesson| lesson.goal))
-                    .unwrap_or_default();
-                if text.0 != heading {
-                    text.0 = heading.into();
+                if let Some(seconds) = vote_seconds {
+                    let _ = write!(scratch, "{seconds}s");
                 }
-                continue;
+                scratch.as_str()
             }
+            Label::Ranked => &online.record_status,
+            Label::LessonHeading => active_section
+                .map(|(_, section)| section.name)
+                .or_else(|| lesson.map(|lesson| lesson.goal))
+                .unwrap_or_default(),
             Label::LessonCue {
                 briefing,
                 sections,
@@ -803,87 +851,74 @@ pub fn update_hud(
                     },
                     |cue| (cue, GOLD),
                 );
-                if text.0 != *cue {
-                    text.0.clone_from(cue);
-                }
                 if color.0 != tint {
                     color.0 = tint;
                 }
-                continue;
+                cue
             }
             Label::LessonHint(retry) => {
                 if !demo && game.lesson_retries > 0 && run.phase == RunPhase::Ready {
-                    if text.0 != *retry {
-                        text.0.clone_from(retry);
-                    }
-                    continue;
-                }
-                if menu.settings.compare_splits
+                    retry
+                } else if menu.settings.compare_splits
                     && let (Some((index, _)), Some(last)) = (active_section, last_clear)
                 {
                     let section_elapsed =
                         run.elapsed - menu_training::section_start(&run.splits, index);
-                    format!(
+                    let _ = write!(
+                        scratch,
                         "Section {} / Last clear {}",
-                        format_time(section_elapsed),
-                        format_time(menu_training::section_time(last, index)),
-                    )
+                        HudTime(section_elapsed),
+                        HudTime(menu_training::section_time(last, index)),
+                    );
+                    scratch.as_str()
                 } else {
-                    String::new()
+                    ""
                 }
             }
             Label::StarterStage => {
                 if run.phase == RunPhase::Untimed {
-                    "Kitsune · Stage practice".into()
+                    "Kitsune · Stage practice"
                 } else {
                     let count = run.checkpoint_count() + 1;
                     let stage = run.splits.len().min(count - 1);
-                    match KITSUNE_STAGES.get(stage) {
-                        Some(name) => format!("Kitsune · Stage {}/{count} · {name}", stage + 1),
-                        None => format!("Kitsune · Stage {}/{count}", stage + 1),
+                    let _ = write!(scratch, "Kitsune · Stage {}/{count}", stage + 1);
+                    if let Some(name) = KITSUNE_STAGES.get(stage) {
+                        let _ = write!(scratch, " · {name}");
                     }
+                    scratch.as_str()
                 }
             }
-            Label::StarterCue(tips) => {
-                let cue: &str = match run.phase {
-                    RunPhase::Untimed => {
-                        "Open Go to stage from the pause menu to choose a practice start."
-                    }
-                    RunPhase::Ready => &tips[0],
-                    RunPhase::Running if run.splits.is_empty() => {
-                        if !run.player.grounded && game.displayed_input().forward > 0.0 {
-                            &tips[1]
-                        } else {
-                            "Look along the ramp and make short taps toward the ridge when you drift."
-                        }
-                    }
-                    RunPhase::Running => &tips[2],
-                    RunPhase::Finished => "Kitsune complete.",
-                };
-                if text.0 != cue {
-                    text.0 = cue.into();
+            Label::StarterCue(tips) => match run.phase {
+                RunPhase::Untimed => {
+                    "Open Go to stage from the pause menu to choose a practice start."
                 }
-                continue;
-            }
+                RunPhase::Ready => &tips[0],
+                RunPhase::Running if run.splits.is_empty() => {
+                    if !run.player.grounded && game.displayed_input().forward > 0.0 {
+                        &tips[1]
+                    } else {
+                        "Look along the ramp and make short taps toward the ridge when you drift."
+                    }
+                }
+                RunPhase::Running => &tips[2],
+                RunPhase::Finished => "Kitsune complete.",
+            },
             Label::StarterRetry(retry) => {
-                let hint = if run.phase == RunPhase::Untimed {
+                if run.phase == RunPhase::Untimed {
                     ""
                 } else {
-                    retry.as_str()
-                };
-                if text.0 != hint {
-                    text.0 = hint.into();
+                    retry
                 }
-                continue;
             }
             Label::Ghost => {
                 if let Some((done, total)) = game.ghost_preparation_progress() {
                     let percent = if total == 0 { 0 } else { done * 100 / total };
-                    format!("Preparing ghost  {percent}%")
+                    let _ = write!(scratch, "Preparing ghost  {percent}%");
+                    scratch.as_str()
                 } else if game.ghost_enabled() {
-                    "Record Ghost".into()
+                    "Record Ghost"
                 } else {
-                    String::new()
+                    ""
                 }
             }
             Label::Shortcut => {
@@ -893,20 +928,27 @@ pub fn update_hud(
                     } else {
                         "Backspace exit"
                     };
-                    format!(
+                    let _ = write!(
+                        scratch,
                         "Replay {tick}/{total}{}\nSpace pause · Right step · R rewind · {back}",
                         if paused { " · Paused" } else { "" }
-                    )
+                    );
+                    scratch.as_str()
                 } else {
-                    format!(
-                        "{} restart   Esc menu",
-                        menu.settings.primary_binding(ControlAction::Restart)
-                    )
+                    let binding = menu.settings.bindings(ControlAction::Restart).first();
+                    if restart_label.is_empty() || restart_binding.as_ref() != binding {
+                        *restart_binding = binding.cloned();
+                        restart_label.clear();
+                        let binding = menu.settings.primary_binding(ControlAction::Restart);
+                        let _ = write!(restart_label, "{binding} restart   Esc menu");
+                    }
+                    restart_label.as_str()
                 }
             }
         };
         if text.0 != value {
-            text.0 = value;
+            text.0.clear();
+            text.0.push_str(value);
         }
     }
     let input = game.displayed_input();
@@ -937,44 +979,69 @@ pub fn update_hud(
     }
 }
 
-fn lesson_checkpoint_label(
+fn write_lesson_checkpoint(
+    label: &mut String,
     lesson: &bevy_surf::tutorial::Lesson,
     run: &bevy_surf::session::Session,
     index: usize,
     last: Option<&BestRun>,
     settings: &Settings,
-) -> String {
+) {
     let Some(section) = lesson.sections.get(index) else {
-        return String::new();
+        return;
     };
-    let mut label = section.name.to_owned();
+    label.push_str(section.name);
     if settings.compare_splits {
         let seconds = run.splits[index] - menu_training::section_start(&run.splits, index);
-        label.push_str(&format!(" · {}", format_time(seconds)));
+        let _ = write!(label, " · {}", HudTime(seconds));
         if let Some(last) = last {
-            let difference =
-                menu_training::section_delta(seconds - menu_training::section_time(last, index));
-            label.push_str(&format!(" ({difference} vs last clear)"));
+            let difference = seconds - menu_training::section_time(last, index);
+            if difference.abs() < 0.0005 {
+                label.push_str(" (Even vs last clear)");
+            } else {
+                let _ = write!(label, " ({difference:+.3}s vs last clear)");
+            }
         }
     }
     if settings.compare_speed
         && let Some(speed) = run.checkpoint_speeds.get(index)
     {
-        label.push_str(&format!("\n{speed:.0} units/s"));
+        let _ = write!(label, "\n{speed:.0} units/s");
         if let Some(previous) = last.and_then(|last| last.speeds.get(index)) {
             let difference = speed - previous;
             if difference.abs() >= 0.5 {
-                label.push_str(&format!(" ({difference:+.0} vs last clear)"));
+                let _ = write!(label, " ({difference:+.0} vs last clear)");
             }
         }
     }
-    label
 }
 
 fn micros(value: u64) -> f64 {
     value as f64 / 1_000_000.0
 }
 
-fn delta(value: Option<f64>) -> String {
-    value.map_or_else(|| "—".into(), |value| format!("{value:+.3}s"))
+struct HudTime(f64);
+
+impl fmt::Display for HudTime {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let millis = (self.0 * 1000.0).round() as u64;
+        write!(
+            formatter,
+            "{:02}:{:02}.{:03}",
+            millis / 60_000,
+            millis / 1000 % 60,
+            millis % 1000
+        )
+    }
+}
+
+struct HudDelta(Option<f64>);
+
+impl fmt::Display for HudDelta {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(value) => write!(formatter, "{value:+.3}s"),
+            None => formatter.write_str("—"),
+        }
+    }
 }

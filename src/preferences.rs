@@ -1,4 +1,7 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    fmt::{self, Write},
+};
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -165,6 +168,21 @@ impl Binding {
             Self::WheelDown => "Wheel down".into(),
         }
     }
+}
+
+fn matches_key_name(key: KeyCode, name: &str) -> bool {
+    struct KeyName<'a>(&'a str);
+
+    impl Write for KeyName<'_> {
+        fn write_str(&mut self, text: &str) -> fmt::Result {
+            self.0 = self.0.strip_prefix(text).ok_or(fmt::Error)?;
+            Ok(())
+        }
+    }
+
+    // Existing settings use Bevy's Debug spelling, including unidentified platform keys.
+    let mut expected = KeyName(name);
+    write!(expected, "{key:?}").is_ok() && expected.0.is_empty()
 }
 
 fn default_bindings() -> BTreeMap<ControlAction, Vec<Binding>> {
@@ -337,7 +355,7 @@ impl Settings {
         self.bindings(action).iter().any(|binding| match binding {
             Binding::Key(key) => keys
                 .get_pressed()
-                .any(|pressed| format!("{pressed:?}") == *key),
+                .any(|&pressed| matches_key_name(pressed, key)),
             Binding::Mouse(button) => mouse.pressed((*button).into()),
             Binding::WheelUp => scroll.y > 0.0,
             Binding::WheelDown => scroll.y < 0.0,
@@ -354,7 +372,7 @@ impl Settings {
         self.bindings(action).iter().any(|binding| match binding {
             Binding::Key(key) => keys
                 .get_just_pressed()
-                .any(|pressed| format!("{pressed:?}") == *key),
+                .any(|&pressed| matches_key_name(pressed, key)),
             Binding::Mouse(button) => mouse.just_pressed((*button).into()),
             Binding::WheelUp => scroll.y > 0.0,
             Binding::WheelDown => scroll.y < 0.0,
@@ -767,5 +785,36 @@ mod tests {
         assert!(settings.active(ControlAction::Forward, &keys, &mouse, Vec2::ZERO));
         assert!(settings.active(ControlAction::Jump, &keys, &mouse, Vec2::NEG_Y));
         assert!(!settings.active(ControlAction::Jump, &keys, &mouse, Vec2::Y));
+    }
+
+    #[test]
+    fn legacy_key_names_keep_exact_held_and_pressed_matching() {
+        use bevy::input::keyboard::NativeKeyCode;
+
+        let mut settings = Settings::read(
+            br#"{"version":2,"bindings":{"crouch":[{"key":"ControlRight"}],"restart":[{"key":"Unidentified(Windows(161))"}],"forward":[{"key":"KeyWExtra"}]}}"#,
+        );
+        let keys = &mut ButtonInput::default();
+        let mouse = &ButtonInput::default();
+
+        keys.press(KeyCode::ControlLeft);
+        keys.press(KeyCode::KeyW);
+        assert!(!settings.active(ControlAction::Crouch, keys, mouse, Vec2::ZERO));
+        assert!(!settings.active(ControlAction::Forward, keys, mouse, Vec2::ZERO));
+        keys.press(KeyCode::ControlRight);
+        assert!(settings.just_pressed(ControlAction::Crouch, keys, mouse, Vec2::ZERO));
+        keys.clear_just_pressed(KeyCode::ControlRight);
+        assert!(!settings.just_pressed(ControlAction::Crouch, keys, mouse, Vec2::ZERO));
+        assert!(settings.active(ControlAction::Crouch, keys, mouse, Vec2::ZERO));
+
+        let custom = KeyCode::Unidentified(NativeKeyCode::Windows(161));
+        keys.press(custom);
+        assert!(settings.active(ControlAction::Restart, keys, mouse, Vec2::ZERO));
+        settings.clear_binding(ControlAction::Restart, 0);
+        assert!(!settings.active(ControlAction::Restart, keys, mouse, Vec2::ZERO));
+        settings.set_binding(ControlAction::Restart, None, Binding::key(custom));
+        let saved = serde_json::to_vec(&settings).unwrap();
+        let reloaded = Settings::read(&saved);
+        assert!(reloaded.just_pressed(ControlAction::Restart, keys, mouse, Vec2::ZERO));
     }
 }
