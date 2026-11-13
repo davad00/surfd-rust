@@ -2,6 +2,8 @@
 
 An independent Bevy 0.20 desktop surf game with Rust room and records servers. The 71-map catalog uses Surfd as a reference for controls, movement and timing. Downline and Surf School are built in for offline practice and local server testing. Catalog assets download at runtime.
 
+The **Practice → Local maps** list also includes community Source maps with pinned files, tiers, and timing zones. These maps use the desktop's 15 ms movement step. The reference Bhop courses use a 10 ms step, so their original times are kept separate. A local `practice-catalog.json` in the map data directory can add pinned Practice courses. The client downloads each course on first use.
+
 ## Windows download
 
 Download `Surfd-Rust-Windows-x64.exe` from [Releases](https://github.com/davad00/surfd-rust/releases) and open it on a Windows x64 PC. The default renderer is DirectX 12. Set `WGPU_BACKEND=vulkan` to use Vulkan. Downline and Surf School are available offline. Catalog maps download on first use. The game stores settings, local progress and its cache in `%LOCALAPPDATA%\Surfd Rust\maps`.
@@ -125,6 +127,8 @@ The opt-in `surfd_parity` test compares native movement with a recorded Surfd ru
 Set `SURFD_VISUAL_MANIFESTS` to a directory of original manifests named `<map-slug>.gz` and run `cargo test --locked --no-default-features --test visual_catalog -- --ignored --nocapture` to check the full catalog's native manifest and visual-pack selection.
 
 Use `--bench-replay TRACK.json` to render a desktop replay to a 1280×800 GPU image and print application frame intervals, map load time, and texture payload as JSON. The benchmark disables environmental audio, warms up for three seconds, samples for twelve seconds, and exits automatically. `max_frame_ms` covers both warmup and sampling. `sample_max_frame_ms` covers the sampling interval. Set `SURF_BENCH_DECODED=1` to compare decoded textures against the adapter's normal selection. For a screenshot at a fixed replay frame, set `SURF_BENCH_START_TICK`, `SURF_BENCH_HOLD_TICK=1`, and `SURF_BENCH_SCREENSHOT` to a `.png` path.
+
+Use `--bench-map FILE.bsp` to measure a local course at its spawn without a replay. With `SURF_SOURCE_BC=1`, supported adapters upload compatible VTF textures in their original block format. The decoded path remains the default while this mode is being evaluated.
 
 Set `SURF_BENCH_AVATAR_COUNT` from 1 to 63 to place that many players in front of the initial replay camera. Hold the replay frame to compare the same crowd view between runs. Set `SURF_BENCH_SERIAL_PACKS=1` to compare serial map pack inflation with the bounded worker path.
 
