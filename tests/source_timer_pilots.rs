@@ -89,8 +89,18 @@ fn aweles_authored_stage_drops() {
                 RunPhase::Untimed
             }
         );
+        let launch_tick = launch_aweles(&course, &mut practice, restart_yaw, start);
+        assert_eq!(practice.stage_progress(&course), Some((stage, 5)));
+        assert_eq!(
+            practice.phase,
+            if stage == 1 {
+                RunPhase::Running
+            } else {
+                RunPhase::Untimed
+            }
+        );
         eprintln!(
-            "Aweles stage {stage} grounded in its exact timer region on restart tick {grounded_tick} and practice tick {practice_tick}"
+            "Aweles stage {stage} grounded in its timer region on restart tick {grounded_tick} and practice tick {practice_tick}, then launched after {launch_tick} forward ticks"
         );
     }
 }
@@ -114,6 +124,28 @@ fn settle_aweles(course: &Course, session: &mut Session, yaw: f32, start: &Zone)
         }
     }
     panic!("Aweles start did not settle");
+}
+
+fn launch_aweles(course: &Course, session: &mut Session, yaw: f32, start: &Zone) -> usize {
+    let revision = session.pose_revision();
+    for tick in 1..=180 {
+        session.tick(
+            course,
+            MoveInput {
+                forward: 1.0,
+                yaw,
+                ..Default::default()
+            },
+        );
+        assert_eq!(session.pose_revision(), revision);
+        let (min, max) = session.player.hull_bounds();
+        if !min.cmple(start.brush.max).all() || !max.cmpge(start.brush.min).all() {
+            let velocity = session.player.velocity;
+            assert!(velocity.x.hypot(velocity.z) > 100.0);
+            return tick;
+        }
+    }
+    panic!("Aweles could not launch from its authored start");
 }
 
 #[test]
