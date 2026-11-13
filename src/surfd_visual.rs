@@ -1477,7 +1477,7 @@ mod tests {
             let eye = Vec3::from_array(eye);
             let clusters = visibility.clusters_near(source_axes(eye)).unwrap();
             let mut mask = Vec::new();
-            assert!(visibility.merge_rows(&clusters, &mut mask));
+            assert!(visibility.merge_rows(&clusters, &mut mask, &mut Vec::new()));
 
             let (visible_prop, hidden_prop) = (&data.props[visible], &data.props[hidden]);
             assert_eq!(visible_prop.model, hidden_prop.model);

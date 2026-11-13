@@ -405,6 +405,7 @@ struct PvsState {
     table: VisualVisibility,
     last_clusters: Option<[usize; 9]>,
     mask: Vec<u8>,
+    encoded_row: Vec<u8>,
     valid: bool,
     targets: PvsTargets,
     counters: Option<PvsCounters>,
@@ -627,6 +628,7 @@ impl PvsState {
             table,
             last_clusters: None,
             mask: Vec::new(),
+            encoded_row: Vec::new(),
             valid: false,
             targets: PvsTargets::Flat(Vec::new()),
             counters: benchmark.then(PvsCounters::default),
@@ -640,8 +642,10 @@ impl PvsState {
         }
         let started = self.counters.is_some().then(Instant::now);
         self.last_clusters = clusters;
-        self.valid =
-            clusters.is_some_and(|clusters| self.table.merge_rows(&clusters, &mut self.mask));
+        self.valid = clusters.is_some_and(|clusters| {
+            self.table
+                .merge_rows(&clusters, &mut self.mask, &mut self.encoded_row)
+        });
         let changed = self.targets.update(
             &self.table,
             self.valid.then_some(self.mask.as_slice()),
@@ -783,7 +787,15 @@ fn update_visible_lods(
             std::env::var("SURF_BENCH_ALL_LODS").is_ok_and(|value| value == "1")
         });
     let sky_frustum = sky.single().ok();
+    let lods = lods.into_inner();
+    let pvs = lods.visibility.pvs.as_ref();
     for group in &mut lods.groups {
+        if !all_lods
+            && let (Some(pvs), Some(clusters)) = (pvs, &group.clusters)
+            && !pvs.visible(clusters)
+        {
+            continue;
+        }
         let depth = (group.transform.translation - position).dot(forward);
         if depth < -group.radius {
             continue;

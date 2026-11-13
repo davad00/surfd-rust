@@ -35,18 +35,30 @@ impl VisualVisibility {
         Some(table)
     }
 
-    fn cluster_at(&self, position: DVec3) -> Option<usize> {
+    fn cluster_at<const CHECK_CORNERS: bool>(&self, position: DVec3) -> Option<(usize, bool)> {
         let mut node = 0;
+        let mut clear = CHECK_CORNERS;
         for _ in 0..self.nodes.len() {
             let [plane, front, back] = self.nodes[node];
             let [x, y, z, distance] = self.planes[plane as usize];
-            let child = if position.x * x + position.y * y + position.z * z >= distance {
-                front
-            } else {
-                back
-            };
+            let projection = position.x * x + position.y * y + position.z * z;
+            if clear {
+                // The eight fallback points are the corners of a two-unit cube.
+                // Keep the full lookup when any corner may cross this BSP plane.
+                let radius = x.abs() + y.abs() + z.abs();
+                let rounding = (position.x.abs() * x.abs()
+                    + position.y.abs() * y.abs()
+                    + position.z.abs() * z.abs()
+                    + distance.abs()
+                    + radius)
+                    * (8.0 * f64::EPSILON);
+                clear = (projection - distance).abs() > radius + rounding;
+            }
+            let child = if projection >= distance { front } else { back };
             if child < 0 {
-                return usize::try_from(-child - 2).ok();
+                return usize::try_from(-child - 2)
+                    .ok()
+                    .map(|cluster| (cluster, clear));
             }
             node = child as usize;
         }
@@ -58,10 +70,16 @@ impl VisualVisibility {
             return None;
         }
         let point = DVec3::new(eye.x.into(), (-eye.z).into(), eye.y.into());
-        let mut clusters = [self.cluster_at(point)?; 9];
+        let (center, clear) = self.cluster_at::<true>(point)?;
+        let mut clusters = [center; 9];
+        if clear {
+            return Some(clusters);
+        }
         for (corner, cluster) in clusters.iter_mut().skip(1).enumerate() {
             let step = |mask| if corner & mask == 0 { -1.0 } else { 1.0 };
-            *cluster = self.cluster_at(point + DVec3::new(step(1), step(2), step(4)))?;
+            *cluster = self
+                .cluster_at::<false>(point + DVec3::new(step(1), step(2), step(4)))?
+                .0;
         }
         clusters.sort_unstable();
         let mut unique = 1;
@@ -76,11 +94,15 @@ impl VisualVisibility {
         Some(clusters)
     }
 
-    pub fn merge_rows(&self, clusters: &[usize; 9], mask: &mut Vec<u8>) -> bool {
+    pub fn merge_rows(
+        &self,
+        clusters: &[usize; 9],
+        mask: &mut Vec<u8>,
+        encoded: &mut Vec<u8>,
+    ) -> bool {
         let width = self.cluster_count.div_ceil(8);
         mask.resize(width, 0);
         mask.fill(0);
-        let mut encoded = Vec::new();
         let mut previous = None;
         for &cluster in clusters {
             if previous == Some(cluster) {
@@ -91,8 +113,8 @@ impl VisualVisibility {
             if self
                 .pvs
                 .get(cluster)
-                .is_none_or(|row| STANDARD.decode_vec(row, &mut encoded).is_err())
-                || !merge_source_row(&encoded, mask)
+                .is_none_or(|row| STANDARD.decode_vec(row, encoded).is_err())
+                || !merge_source_row(encoded, mask)
             {
                 return false;
             }
@@ -152,13 +174,51 @@ mod tests {
         )
         .unwrap();
         let mut mask = Vec::new();
+        let mut scratch = Vec::new();
         let near = table.clusters_near(Vec3::ZERO).unwrap();
-        assert!(table.merge_rows(&near, &mut mask));
+        assert!(table.merge_rows(&near, &mut mask, &mut scratch));
         assert_eq!(mask, [0b11]);
         let inside = table.clusters_near(Vec3::X * 3.0).unwrap();
-        assert!(table.merge_rows(&inside, &mut mask));
+        assert!(table.merge_rows(&inside, &mut mask, &mut scratch));
         assert_eq!(mask, [0b01]);
         table.pvs[1] = "AA==".to_owned();
-        assert!(!table.merge_rows(&near, &mut mask));
+        assert!(!table.merge_rows(&near, &mut mask, &mut scratch));
+    }
+
+    #[test]
+    fn checks_other_clusters_at_exact_plane_corners() {
+        let table = VisualVisibility::parse(
+            serde_json::json!({
+                "format": 1, "bspSha1": "fixture", "clusterCount": 3,
+                "planes": [[1.0, 2.0, 1.0, 0.0], [0.0, 0.0, 1.0, 0.0]],
+                "nodes": [[0, 1, -3], [1, -2, -4]],
+                "pvs": ["AQ==", "Ag==", "BA=="]
+            }),
+            "fixture",
+        )
+        .unwrap();
+        for x in -10..=10 {
+            for y in -5..=5 {
+                let eye = Vec3::new(x as f32 * 0.5, y as f32 * 0.5, -0.5);
+                let point = DVec3::new(eye.x.into(), (-eye.z).into(), eye.y.into());
+                let mut expected = vec![table.cluster_at::<false>(point).unwrap().0];
+                for corner in 0..8 {
+                    let offset = |mask| if corner & mask == 0 { -1.0 } else { 1.0 };
+                    expected.push(
+                        table
+                            .cluster_at::<false>(
+                                point + DVec3::new(offset(1), offset(2), offset(4)),
+                            )
+                            .unwrap()
+                            .0,
+                    );
+                }
+                expected.sort_unstable();
+                expected.dedup();
+                let mut actual = table.clusters_near(eye).unwrap().to_vec();
+                actual.dedup();
+                assert_eq!(actual, expected);
+            }
+        }
     }
 }
