@@ -1395,6 +1395,7 @@ pub(super) fn poll_load(
                         }
                         menu.set_status(format!("{} is ready", game.course.name));
                         menu.go(Page::Playing);
+                        menu.refresh();
                     }
                     Err(error) => {
                         if benchmark.is_some() {

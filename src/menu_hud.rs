@@ -1,5 +1,6 @@
 use super::*;
 use crate::view::LiveLessonCue;
+use bevy_surf::rules::TickInterval;
 use std::{
     fmt::{self, Write},
     time::Instant,
@@ -56,7 +57,16 @@ pub(super) fn spawn_hud(
                         corner.spawn(text("Y chat · /help", 11. * scale, MUTED));
                     }
                     if lesson.is_none() {
-                        corner.spawn(text("66 tick  /  Source-style surf", 11. * scale, MUTED));
+                        let rate = match game.displayed_session().tick_interval() {
+                            TickInterval::Legacy15Ms => "66.67",
+                            TickInterval::Source10Ms => "100",
+                        };
+                        let mode = game.course.map_mode().label();
+                        corner.spawn(text(
+                            format!("{rate} tick  /  Source-style {mode}"),
+                            11. * scale,
+                            MUTED,
+                        ));
                     }
                     let camera = settings.primary_binding(ControlAction::ToggleCamera);
                     if camera != "—" {
@@ -1043,5 +1053,49 @@ impl fmt::Display for HudDelta {
             Some(value) => write!(formatter, "{value:+.3}s"),
             None => formatter.write_str("—"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::ecs::world::CommandQueue;
+    use bevy_surf::course::Course;
+
+    #[test]
+    fn hud_shows_the_loaded_course_tick_rate_and_mode() {
+        assert_hud_profile(Course::practice(), "66.67 tick  /  Source-style Surf");
+        let mut course = Course::practice();
+        course.name = "bhop_hud_fixture".into();
+        assert_hud_profile(course, "66.67 tick  /  Source-style Bhop");
+    }
+
+    #[test]
+    #[ignore = "requires the verified Jaunt 6 BSP and timer via SURF_JAUNT_HUD_FIXTURE"]
+    fn hud_shows_100_tick_for_jaunt() {
+        let fixture = std::env::var_os("SURF_JAUNT_HUD_FIXTURE").expect("Jaunt BSP fixture");
+        let course =
+            bevy_surf::local_map::load(Path::new(&fixture)).expect("verified Jaunt course");
+        assert_hud_profile(course, "100 tick  /  Source-style Bhop");
+    }
+
+    fn assert_hud_profile(course: Course, expected: &str) {
+        let game = Game::new(course);
+        let mut world = World::new();
+        let mut queue = CommandQueue::default();
+        spawn_hud(
+            &mut Commands::new(&mut queue, &world),
+            &game,
+            &Settings::default(),
+            &Online::default(),
+        );
+        queue.apply(&mut world);
+
+        assert!(
+            world
+                .query::<&Text>()
+                .iter(&world)
+                .any(|text| text.0 == expected)
+        );
     }
 }
