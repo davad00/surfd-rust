@@ -96,6 +96,8 @@ The snapshot is saved on this device for the current desktop account and records
 
 Downloadable community Source maps appear in **Practice** and in matching room rotations. The desktop downloads a map when you select it or join a room playing it. The records service uses the same pinned map and timer revision for ranked saves. Each map entry includes the published tier and timing layout. The desktop finds supported installed Source games through Steam for original stock textures. Set `SURF_SOURCE_ASSETS` to use a separate installation, loose material directory, or VPK.
 
+Imported maps use original materials when available. Surfaces with missing materials get a built-in tile texture, and missing Source skies get a built-in sky. Players can see ramps and platforms and use the same timer and movement without installing another game.
+
 Catalog maps use Surfd's converted collision, base textures, baked lighting, sky depth, and authored prop, area and proximity fades where supplied. In-game map loading uses original GPU-compressed material textures when the adapter supports them and can fall back to decoded packs. The project bundles catalog metadata and fetches map assets into a local cache. Map and asset credits remain with their authors. [Surfd credits](https://surfd.net/credits.html)
 
 Catalog bonus routes apply their own collision changes, teleport rules, boosts, and trigger outputs. Imported bonuses use a revised leaderboard ruleset, and previous desktop bonus recordings can still play with their recorded rules.

@@ -6,6 +6,7 @@ pub mod goldsrc_bsp;
 pub mod loadout;
 pub mod local_map;
 pub mod look;
+pub mod map_materials;
 pub mod movement;
 pub mod network;
 pub mod quake3_bsp;

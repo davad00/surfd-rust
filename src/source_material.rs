@@ -12,7 +12,8 @@ use vformats::bsp::{ZipEntry, ZipReader};
 use vformats::vpk::{self, VpkLocation};
 use vformats::{Limits, vmt, vtf};
 
-use crate::course::{CourseTexture, TextureAlpha};
+use crate::course::{CourseTexture, Surface, TextureAlpha};
+use crate::map_materials;
 
 const MAX_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DECODED_BYTES: usize = 256 * 1024 * 1024;
@@ -30,6 +31,7 @@ pub(crate) struct Materials<'a> {
     decoded: HashMap<(String, Alpha), usize>,
     textures: Vec<CourseTexture>,
     decoded_bytes: usize,
+    replacements: [Option<usize>; 2],
 }
 
 #[derive(Clone, Copy)]
@@ -188,6 +190,7 @@ impl<'a> Materials<'a> {
             decoded: HashMap::new(),
             textures: Vec::new(),
             decoded_bytes: 0,
+            replacements: [None; 2],
         }
     }
 
@@ -202,6 +205,15 @@ impl<'a> Materials<'a> {
 
     pub fn into_textures(self) -> Vec<CourseTexture> {
         self.textures
+    }
+
+    pub fn fill_surface(&mut self, surface: &mut Surface, translucent: bool) {
+        map_materials::fill_surface(
+            surface,
+            &mut self.textures,
+            &mut self.replacements,
+            translucent,
+        );
     }
 
     pub fn resolve_sky(&mut self, name: &str) -> Option<[usize; 6]> {

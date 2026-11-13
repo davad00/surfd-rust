@@ -1253,6 +1253,11 @@ fn polygon_batches(course: &Course) -> BTreeMap<MaterialKey, Buffers> {
             .lightmap
             .as_ref()
             .filter(|light| light.uvs.len() == surface.vertices.len());
+        let replacement = base
+            .and_then(|texture| course.textures.get(texture.index))
+            .is_some_and(|texture| {
+                bevy_surf::map_materials::REPLACEMENT_SURFACES.contains(&texture.name.as_str())
+            });
         let buffers = batches
             .entry((
                 base.map(|texture| texture.index),
@@ -1270,13 +1275,14 @@ fn polygon_batches(course: &Course) -> BTreeMap<MaterialKey, Buffers> {
                 continue;
             }
             let shade = 0.58 + 0.42 * normal.dot(Vec3::new(0.23, 0.92, 0.31)).max(0.0);
-            let tint = if base.is_some() {
+            let tint = if base.is_some() && !replacement {
                 [1.0; 4]
             } else {
+                let lift = if replacement { 0.32 } else { 0.0 };
                 [
-                    color.red * shade,
-                    color.green * shade,
-                    color.blue * shade,
+                    color.red.max(lift) * shade,
+                    color.green.max(lift) * shade,
+                    color.blue.max(lift) * shade,
                     1.0,
                 ]
             };

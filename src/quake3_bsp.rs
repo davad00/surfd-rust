@@ -198,6 +198,12 @@ fn decode(name: String, data: &[u8], assets: &mut Assets<'_>) -> Result<Course, 
         .map(|brush| brush.min.y)
         .fold(spawn.y, f32::min)
         - 512.0;
+    let sky = sky.or_else(|| {
+        bsp.shaders
+            .iter()
+            .any(|shader| shader.surface_flags & SURF_SKY != 0)
+            .then(|| crate::map_materials::append_sky(&mut assets.textures))
+    });
     Ok(Course {
         name,
         catalog_revision: None,

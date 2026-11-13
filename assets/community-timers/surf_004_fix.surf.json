@@ -1,0 +1,117 @@
+{
+  "version": 1,
+  "bsp_sha256": "f555e718b1cfa5e38de65109bd3d9ef12308389507b8c6086a10b15ef096f645",
+  "mode": "surf",
+  "timer": "shavit",
+  "tier": 2,
+  "tracks": [
+    {
+      "id": 0,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    }
+  ],
+  "zones": [
+    {
+      "kind": "start",
+      "track": 0,
+      "points": [
+        [
+          -10752,
+          -512
+        ],
+        [
+          -10240,
+          -512
+        ],
+        [
+          -10240,
+          512
+        ],
+        [
+          -10752,
+          512
+        ]
+      ],
+      "bottom": 15808,
+      "height": 256
+    },
+    {
+      "kind": "end",
+      "track": 0,
+      "points": [
+        [
+          -2816,
+          -1472
+        ],
+        [
+          -1920,
+          -1472
+        ],
+        [
+          -1920,
+          1472
+        ],
+        [
+          -2816,
+          1472
+        ]
+      ],
+      "bottom": 0.03125,
+      "height": 32.96875
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "points": [
+        [
+          7232,
+          -767
+        ],
+        [
+          7873,
+          -767
+        ],
+        [
+          7873,
+          768
+        ],
+        [
+          7232,
+          768
+        ]
+      ],
+      "bottom": 5420,
+      "height": 253.7099609375,
+      "index": 2
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "points": [
+        [
+          -1457,
+          -1472
+        ],
+        [
+          -1216,
+          -1472
+        ],
+        [
+          -1216,
+          1472
+        ],
+        [
+          -1457,
+          1472
+        ]
+      ],
+      "bottom": 11774.7001953125,
+      "height": 1601.2998046875,
+      "index": 1
+    }
+  ],
+  "entity_output_fixes": []
+}

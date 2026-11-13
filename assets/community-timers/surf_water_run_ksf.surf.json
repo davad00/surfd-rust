@@ -1,0 +1,304 @@
+{
+  "version": 1,
+  "bsp_sha256": "dfe97b7c6fce1bc6ee1b26a00ff7cd2c9908bd5366b84ce4a3423f74ba746d8f",
+  "mode": "surf",
+  "timer": "shavit",
+  "tier": 1,
+  "tracks": [
+    {
+      "id": 0,
+      "checkpoints_required": true,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    },
+    {
+      "id": 1,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    }
+  ],
+  "zones": [
+    {
+      "kind": "start",
+      "track": 0,
+      "points": [
+        [
+          8007,
+          -1569
+        ],
+        [
+          8332,
+          -1569
+        ],
+        [
+          8332,
+          -1282
+        ],
+        [
+          8007,
+          -1282
+        ]
+      ],
+      "bottom": -2200,
+      "height": 354,
+      "hook_hammerid": 162516
+    },
+    {
+      "kind": "allow_bhop",
+      "track": 0,
+      "points": [
+        [
+          8009,
+          2159.6298828125
+        ],
+        [
+          8332,
+          2159.6298828125
+        ],
+        [
+          8332,
+          2503
+        ],
+        [
+          8009,
+          2503
+        ]
+      ],
+      "bottom": -2233,
+      "height": 82,
+      "hook_hammerid": 162582
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "points": [
+        [
+          -375,
+          365
+        ],
+        [
+          518,
+          365
+        ],
+        [
+          518,
+          1025
+        ],
+        [
+          -375,
+          1025
+        ]
+      ],
+      "bottom": 461,
+      "height": 221,
+      "index": 2,
+      "hook_hammerid": 162534
+    },
+    {
+      "kind": "allow_bhop",
+      "track": 0,
+      "points": [
+        [
+          -445,
+          -5153
+        ],
+        [
+          589,
+          -5153
+        ],
+        [
+          589,
+          -3151
+        ],
+        [
+          -445,
+          -3151
+        ]
+      ],
+      "bottom": -1844,
+      "height": 130,
+      "hook_hammerid": 162547
+    },
+    {
+      "kind": "allow_bhop",
+      "track": 0,
+      "points": [
+        [
+          2363,
+          -4275
+        ],
+        [
+          3145,
+          -4275
+        ],
+        [
+          3145,
+          -1998
+        ],
+        [
+          2363,
+          -1998
+        ]
+      ],
+      "bottom": -2975,
+      "height": 303,
+      "hook_hammerid": 162633
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "points": [
+        [
+          7188,
+          -5674
+        ],
+        [
+          7513,
+          -5674
+        ],
+        [
+          7513,
+          -5387
+        ],
+        [
+          7188,
+          -5387
+        ]
+      ],
+      "bottom": -4160,
+      "height": 514,
+      "index": 3,
+      "hook_hammerid": 162655
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "points": [
+        [
+          -2048,
+          -5756
+        ],
+        [
+          -1723,
+          -5756
+        ],
+        [
+          -1723,
+          -5469
+        ],
+        [
+          -2048,
+          -5469
+        ]
+      ],
+      "bottom": -628,
+      "height": 374,
+      "index": 4,
+      "hook_hammerid": 162684
+    },
+    {
+      "kind": "end",
+      "track": 0,
+      "points": [
+        [
+          -1995,
+          -2283
+        ],
+        [
+          -1804,
+          -2283
+        ],
+        [
+          -1804,
+          -2118
+        ],
+        [
+          -1995,
+          -2118
+        ]
+      ],
+      "bottom": -5513,
+      "height": 115,
+      "hook_hammerid": 162706
+    },
+    {
+      "kind": "start",
+      "track": 1,
+      "points": [
+        [
+          -297,
+          664.5
+        ],
+        [
+          596,
+          664.5
+        ],
+        [
+          596,
+          1324.5
+        ],
+        [
+          -297,
+          1324.5
+        ]
+      ],
+      "bottom": -6525,
+      "height": 210,
+      "hook_hammerid": 164776
+    },
+    {
+      "kind": "allow_bhop",
+      "track": 1,
+      "points": [
+        [
+          1054,
+          -5280
+        ],
+        [
+          1914,
+          -5280
+        ],
+        [
+          1914,
+          -4866
+        ],
+        [
+          1054,
+          -4866
+        ]
+      ],
+      "bottom": -9925,
+      "height": 800,
+      "hook_hammerid": 157869
+    },
+    {
+      "kind": "end",
+      "track": 1,
+      "points": [
+        [
+          2638,
+          2973
+        ],
+        [
+          2857,
+          2973
+        ],
+        [
+          2857,
+          3187
+        ],
+        [
+          2638,
+          3187
+        ]
+      ],
+      "bottom": -11525,
+      "height": 545,
+      "hook_hammerid": 157771
+    }
+  ],
+  "entity_output_fixes": []
+}

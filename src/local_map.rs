@@ -8,7 +8,7 @@ use flate2::read::MultiGzDecoder;
 
 use crate::catalog::MapMode;
 use crate::course::{Course, ZoneKind};
-use crate::{goldsrc_bsp, quake_bsp, quake3_bsp, source_bsp};
+use crate::{goldsrc_bsp, map_materials, quake_bsp, quake3_bsp, source_bsp};
 
 pub fn map_name(path: &Path) -> Option<&str> {
     if is_pk3(path) {
@@ -46,6 +46,7 @@ pub fn load(path: &Path) -> Result<Course, String> {
     if let Some(mode) = source_bsp::map_metadata(path).mode {
         course.map_triggers.source_mode = Some(mode);
     }
+    map_materials::fill_missing_surfaces(&mut course);
     Ok(course)
 }
 

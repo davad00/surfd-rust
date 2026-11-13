@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::catalog::{CatalogEntry, MapMode};
 use crate::course::{Brush, Course, Plane, Surface, SurfaceTexture, Zone};
+use crate::map_materials;
 use crate::source_material::Materials;
 
 #[path = "source_bsp_entities.rs"]
@@ -33,6 +34,8 @@ const MAX_FILE_SIZE: u64 = 512 * 1024 * 1024;
 const MAX_LUMP_SIZE: usize = 64 * 1024 * 1024;
 const PLAYER_SOLID: i32 = 0x1 | 0x2 | 0x8 | 0x4000 | 0x10000;
 const HIDDEN_SURFACE: i32 = 0x2 | 0x4 | 0x40 | 0x80 | 0x100 | 0x200;
+const SKY_SURFACE: i32 = 0x2 | 0x4;
+const TRANSLUCENT_SURFACE: i32 = 0x10;
 
 const ENTITIES: usize = 0;
 const PLANES: usize = 1;
@@ -349,16 +352,24 @@ fn parse(
         .map(|brush| brush.min.y)
         .fold(spawn.y, f32::min)
         - 2048.0;
+    let sky_name = entities
+        .iter()
+        .find(|entity| entity.get("classname") == Some("worldspawn"))
+        .and_then(|entity| entity.get("skyname"));
     let sky = load_visuals
-        .then(|| {
-            entities
-                .iter()
-                .find(|entity| entity.get("classname") == Some("worldspawn"))?
-                .get("skyname")
-                .and_then(|name| materials.resolve_sky(name))
-        })
-        .flatten();
+        .then_some(sky_name)
+        .flatten()
+        .and_then(|name| materials.resolve_sky(name));
     let mut textures = materials.into_textures();
+    let sky = sky.or_else(|| {
+        (load_visuals
+            && (sky_name.is_some()
+                || geometry
+                    .textures
+                    .iter()
+                    .any(|info| info.flags & SKY_SURFACE != 0)))
+        .then(|| map_materials::append_sky(&mut textures))
+    });
     lightmaps.append(&mut textures, &mut surfaces);
     let mut course = Course {
         name: name.to_owned(),
@@ -748,11 +759,6 @@ impl Geometry {
             let resolved = material
                 .and_then(|material| material.name.as_deref())
                 .and_then(|name| materials.resolve(name));
-            let lightmap = if resolved.is_some_and(|texture| !texture.lightmapped) {
-                None
-            } else {
-                lightmaps.surface(face.lightmap, info.light_axes, &vertices)
-            };
             let texture = material.and_then(|material| {
                 if material.size.iter().any(|&dimension| dimension <= 0.0) {
                     return None;
@@ -777,15 +783,23 @@ impl Geometry {
                         uvs,
                     })
             });
+            let lightmap =
+                if texture.is_some() && resolved.is_some_and(|texture| texture.lightmapped) {
+                    lightmaps.surface(face.lightmap, info.light_axes, &vertices)
+                } else {
+                    None
+                };
             for vertex in &mut vertices {
                 *vertex = placement.point(*vertex);
             }
-            surfaces.push(Surface {
+            let mut surface = Surface {
                 vertices,
                 color,
                 texture,
                 lightmap,
-            });
+            };
+            materials.fill_surface(&mut surface, info.flags & TRANSLUCENT_SURFACE != 0);
+            surfaces.push(surface);
         }
         Ok(surfaces)
     }
@@ -1130,6 +1144,43 @@ mod tests {
         put(&mut bytes, entry, u32::MAX.to_le_bytes());
         let error = parse(&bytes, "truncated", None, None, true).err().unwrap();
         assert!(error.contains("invalid range"));
+    }
+
+    #[test]
+    fn missing_source_assets_keep_surfaces_and_sky_readable() {
+        let mut bytes = fixture();
+        add_lump(
+            &mut bytes,
+            ENTITIES,
+            0,
+            br#"
+                { "classname" "worldspawn" "skyname" "surfd_test_missing_sky" }
+                { "classname" "info_player_counterterrorist" "origin" "15 25 35" }
+            "#,
+        );
+        let visible = parse(&bytes, "fixture", None, None, true).unwrap();
+        let collision = parse(&bytes, "fixture", None, None, false).unwrap();
+        let face = &visible.surfaces[0];
+        let material = face
+            .texture
+            .as_ref()
+            .expect("missing texture needs a replacement");
+        assert!(
+            visible.textures[material.index]
+                .name
+                .starts_with("surfd-fallback/")
+        );
+        assert!(face.lightmap.is_none());
+        assert_eq!(material.uvs.len(), face.vertices.len());
+        assert_ne!(material.uvs[0], material.uvs[1]);
+        let sky = visible.sky.expect("missing sky needs a replacement");
+        assert!(sky.iter().all(|&index| {
+            let face = &visible.textures[index];
+            face.name.starts_with("surfd-fallback/sky/") && face.width == face.height
+        }));
+        assert!(collision.textures.is_empty());
+        assert!(collision.surfaces.is_empty());
+        assert!(collision.sky.is_none());
     }
 
     #[test]

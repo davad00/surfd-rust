@@ -7,5 +7,9 @@ These timer sidecars use the authored zones and configurations from [wrldspawnâ€
 - **Surf School**, by sid. The sidecar includes the archiveâ€™s autobhop setting for both routes. [Map and tier credit](https://ksf.surf/maps/surf_school_fix)
 - **Calycate**, by ArcticPanda. [Map and tier credit](https://ksf.surf/maps/surf_calycate_ksf)
 - **Satellite**, by biji and iNooVa. The sidecar opts into the original map's gravity triggers. [Map and tier credit](https://ksf.surf/maps/surf_satellite_fix)
+- **Surf 004 Fix**, by monkeywithagun. This uses the archive's two-checkpoint Shavit route. [Map and tier credit](https://ksf.surf/maps/surf_004_fix)
+- **Surf 6**, by vay. [Map and tier credit](https://ksf.surf/maps/surf_6)
+- **Surf Mom Fix**. [Map and tier credit](https://ksf.surf/maps/surf_mom_fix)
+- **Surf Water Run**. [Map and tier credit](https://ksf.surf/maps/surf_water_run_ksf)
 
 The desktop fetches the original BSPs from [FastDL](https://fastdl.me/#questions). These sidecars contain timing data only.

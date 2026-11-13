@@ -314,6 +314,12 @@ impl<'a> LegacyBsp<'a> {
             return Err("BSP has no usable solid geometry".into());
         }
         lightmaps.append(&mut course_textures, &mut surfaces);
+        let sky = self
+            .entities
+            .first()
+            .and_then(|entity| entity.get("skyname"))
+            .filter(|name| !name.is_empty())
+            .map(|_| crate::map_materials::append_sky(&mut course_textures));
         let spawn = self.default_spawn(world);
         Ok(Course {
             name: name.into(),
@@ -332,7 +338,7 @@ impl<'a> LegacyBsp<'a> {
             visual_meshes: Vec::new(),
             visual_visibility: None,
             practice_spawns: Vec::new(),
-            sky: None,
+            sky,
             sky_occluders: Vec::new(),
             fog: None,
             zones,
