@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "bsp_sha256": "a0b3572f8545678f9eea8aea89ab9627dfb17603e93089ac57ddb87de70ef867",
+  "mode": "surf",
+  "timer": "shavit",
+  "tier": 5,
+  "max_velocity": 3500,
+  "tracks": [
+    {
+      "id": 0,
+      "checkpoints_required": true,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    },
+    {
+      "id": 1,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    }
+  ],
+  "zones": [
+    {
+      "kind": "start",
+      "track": 0,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "s1_start",
+      "hook_hammerid": 42858
+    },
+    {
+      "kind": "end",
+      "track": 0,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "map_end",
+      "hook_hammerid": 271060
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "index": 2,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "s2_start",
+      "hook_hammerid": 46267
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "index": 3,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "s3_start",
+      "hook_hammerid": 75170
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "index": 4,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "s4_start",
+      "hook_hammerid": 117018
+    },
+    {
+      "kind": "start",
+      "track": 1,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "b1_start",
+      "hook_hammerid": 41514
+    },
+    {
+      "kind": "end",
+      "track": 1,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "b1_end",
+      "hook_hammerid": 41684
+    }
+  ],
+  "entity_output_fixes": []
+}

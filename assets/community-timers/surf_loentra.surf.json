@@ -1,0 +1,119 @@
+{
+  "version": 1,
+  "bsp_sha256": "5543d55e6344ca0574458811126cd1f82ff548d38d2ba41d0d4847e0cdc12433",
+  "mode": "surf",
+  "timer": "shavit",
+  "tier": 5,
+  "max_velocity": 5000,
+  "tracks": [
+    {
+      "id": 0,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    },
+    {
+      "id": 1,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    },
+    {
+      "id": 2,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    }
+  ],
+  "zones": [
+    {
+      "kind": "start",
+      "track": 0,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "start",
+      "hook_hammerid": 33549
+    },
+    {
+      "kind": "end",
+      "track": 0,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "end",
+      "hook_hammerid": 33613
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 1,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "checkpoint1",
+      "hook_hammerid": 33574
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 2,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "checkpoint2",
+      "hook_hammerid": 33589
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 3,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "checkpoint3",
+      "hook_hammerid": 33601
+    },
+    {
+      "kind": "start",
+      "track": 2,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "bonus2start",
+      "hook_hammerid": 33635
+    },
+    {
+      "kind": "end",
+      "track": 2,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "bonus2end",
+      "hook_hammerid": 33650
+    },
+    {
+      "kind": "start",
+      "track": 1,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "bonus1start",
+      "hook_hammerid": 33668
+    },
+    {
+      "kind": "end",
+      "track": 1,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "bonus1end",
+      "hook_hammerid": 33680
+    }
+  ],
+  "entity_output_fixes": [],
+  "source_prestart_target": "resp"
+}

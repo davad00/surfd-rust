@@ -1,0 +1,255 @@
+{
+  "version": 1,
+  "bsp_sha256": "c23d1be5fad7c159feaa22fe70e5c13635fe09929fc356ce915c3bad74345790",
+  "mode": "surf",
+  "timer": "shavit",
+  "tier": 1,
+  "tracks": [
+    {
+      "id": 0,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    },
+    {
+      "id": 1,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    }
+  ],
+  "zones": [
+    {
+      "kind": "start",
+      "track": 0,
+      "points": [
+        [
+          -1537,
+          8446.990234375
+        ],
+        [
+          1537,
+          8446.990234375
+        ],
+        [
+          1537,
+          9600.990234375
+        ],
+        [
+          -1537,
+          9600.990234375
+        ]
+      ],
+      "bottom": 12304,
+      "height": 242,
+      "hook_target": "zone_start"
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "points": [
+        [
+          -2049,
+          -12353
+        ],
+        [
+          2049,
+          -12353
+        ],
+        [
+          2049,
+          -12223
+        ],
+        [
+          -2049,
+          -12223
+        ]
+      ],
+      "bottom": 8256,
+      "height": 1474,
+      "index": 1,
+      "hook_target": "zone_cp1"
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "points": [
+        [
+          -2049,
+          12671
+        ],
+        [
+          2049,
+          12671
+        ],
+        [
+          2049,
+          12801
+        ],
+        [
+          -2049,
+          12801
+        ]
+      ],
+      "bottom": 64,
+      "height": 1986,
+      "index": 2,
+      "hook_target": "zone_cp2"
+    },
+    {
+      "kind": "end",
+      "track": 1,
+      "points": [
+        [
+          719,
+          12191
+        ],
+        [
+          881,
+          12191
+        ],
+        [
+          881,
+          12385
+        ],
+        [
+          719,
+          12385
+        ]
+      ],
+      "bottom": 11760,
+      "height": 146,
+      "hook_target": "zone_bonus_end"
+    },
+    {
+      "kind": "end",
+      "track": 0,
+      "points": [
+        [
+          -576.75,
+          7551.25
+        ],
+        [
+          576.75,
+          7551.25
+        ],
+        [
+          576.75,
+          8193
+        ],
+        [
+          -576.75,
+          8193
+        ]
+      ],
+      "bottom": -12416,
+      "height": 1666,
+      "hook_target": "zone_end"
+    },
+    {
+      "kind": "start",
+      "track": 1,
+      "points": [
+        [
+          -1265,
+          12191
+        ],
+        [
+          -1103,
+          12191
+        ],
+        [
+          -1103,
+          12385
+        ],
+        [
+          -1265,
+          12385
+        ]
+      ],
+      "bottom": 11520,
+      "height": 146,
+      "hook_target": "zone_bonus_start"
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "points": [
+        [
+          4351,
+          -2177
+        ],
+        [
+          6145,
+          -2177
+        ],
+        [
+          6145,
+          -1983
+        ],
+        [
+          4351,
+          -1983
+        ]
+      ],
+      "bottom": -10240,
+      "height": 1794,
+      "index": 3,
+      "hook_hammerid": 450242
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "points": [
+        [
+          -6145,
+          -2177
+        ],
+        [
+          -4351,
+          -2177
+        ],
+        [
+          -4351,
+          -1983
+        ],
+        [
+          -6145,
+          -1983
+        ]
+      ],
+      "bottom": -10240,
+      "height": 1794,
+      "index": 3,
+      "hook_hammerid": 450261
+    },
+    {
+      "kind": "allow_bhop",
+      "track": 1,
+      "points": [
+        [
+          -1264,
+          12176
+        ],
+        [
+          896,
+          12176
+        ],
+        [
+          896,
+          12400
+        ],
+        [
+          -1264,
+          12400
+        ]
+      ],
+      "bottom": 11280.4345703125,
+      "height": 703.5654296875
+    }
+  ],
+  "entity_output_fixes": [],
+  "source_player_filters": true
+}

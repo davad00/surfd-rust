@@ -18,6 +18,22 @@ The desktop fetches the original BSPs from [FastDL](https://fastdl.me/#questions
 
 The desktop Practice course uses the ten-stage main route from [SurfTimer's published zone and tier tables](https://github.com/surftimer/SurfTimer/tree/b9c860942b8a55b7e36c244264f53c4e6d13a32b/scripts/mysql-files). The original Counter-Strike: Source BSP is pinned by hash. The [source rows and GPLv3 license](cksurftimer) accompany the derived timer. The map has an independent 3,500-unit per-axis cap and a 350-unit start-speed cap. The original timer plugin applies its start-speed policy differently, so this route is available in Practice under the desktop movement profile.
 
+## Additional Counter-Strike: Source Practice routes
+
+The author-marked timer brushes are read from each pinned map. The two wrldspawn imports use the included [Unlicense](LICENSE). Published KSF replays provide 3,500-unit velocity-cap evidence for Brutalist, Delight, and Rubik's Cube. Other server settings still need verification.
+
+| Map | Tier source | Timer data |
+| --- | --- | --- |
+| Brutalist | [KSF](https://ksf.surf/maps/surf_brutalist) | Compiled map |
+| Chasm | [KSF](https://ksf.surf/maps/surf_chasm) | Compiled map |
+| Delight | [KSF](https://ksf.surf/maps/surf_delight) | Compiled map |
+| Enlightened | [KSF](https://ksf.surf/maps/surf_enlightened_ksf) | [wrldspawn](https://github.com/wrldspawn/surf-zones/tree/51025635e19b833c00bb69c88559cea087434e0d) |
+| Glass 7 | [KSF](https://ksf.surf/maps/surf_glass7_ksf) | Compiled map |
+| Lament | [KSF](https://ksf.surf/maps/surf_lament_ksf) | [wrldspawn](https://github.com/wrldspawn/surf-zones/tree/51025635e19b833c00bb69c88559cea087434e0d) |
+| Loentra | [KSF](https://ksf.surf/maps/surf_loentra) | Compiled map and authored prestart destination |
+| Rubik's Cube | [KSF](https://ksf.surf/maps/surf_rubiks_cube) | Compiled map |
+| Void | [KSF](https://ksf.surf/maps/surf_void) | Compiled map and authored jump-suppression triggers |
+
 ## Counter-Strike: Source Surf course credits
 
 The four wrldspawn timers use the Unlicense course data. The other timers reference each map author's compiled timer brushes directly, with published tiers and named authors from KSF. KSF lists 0 for some speed caps, which indicates an unspecified per-map override. The documented native 5,000-unit per-axis cap applies on those maps. This is the desktop ranked ruleset.

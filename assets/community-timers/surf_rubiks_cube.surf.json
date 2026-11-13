@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "bsp_sha256": "0f27a170fc2214ef2d22062254417122a5e6ea9eb5564a02a3620b56a67e02f4",
+  "mode": "surf",
+  "timer": "shavit",
+  "tier": 4,
+  "max_velocity": 3500,
+  "tracks": [
+    {
+      "id": 0,
+      "checkpoints_required": true,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    },
+    {
+      "id": 1,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    },
+    {
+      "id": 2,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    }
+  ],
+  "zones": [
+    {
+      "kind": "start",
+      "track": 0,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "s1 start",
+      "hook_hammerid": 607417
+    },
+    {
+      "kind": "end",
+      "track": 0,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "map end",
+      "hook_hammerid": 611718
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "index": 4,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "s4 start",
+      "hook_hammerid": 607532
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "index": 2,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "s2 start",
+      "hook_hammerid": 607447
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "index": 3,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "s3 start",
+      "hook_hammerid": 607491
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "index": 5,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "s5 start",
+      "hook_hammerid": 607566
+    },
+    {
+      "kind": "start",
+      "track": 2,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "b2_start",
+      "hook_hammerid": 665967
+    },
+    {
+      "kind": "end",
+      "track": 2,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "b2_end",
+      "hook_hammerid": 666007
+    },
+    {
+      "kind": "end",
+      "track": 1,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "b1_end",
+      "hook_hammerid": 652443
+    },
+    {
+      "kind": "start",
+      "track": 1,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "b1_start",
+      "hook_hammerid": 652440
+    }
+  ],
+  "entity_output_fixes": []
+}
