@@ -922,6 +922,7 @@ pub fn run(
                 .chain()
                 .after(InputSystems),
         );
+        app.add_systems(Update, update_frame_pacing.after(menu::render));
     }
     #[cfg(feature = "client-audio")]
     app.add_plugins(crate::ambient::AmbientPlugin);
@@ -929,6 +930,18 @@ pub fn run(
     match app.run() {
         AppExit::Success => Ok(()),
         AppExit::Error(_) => Err("Desktop client exited with an error".into()),
+    }
+}
+
+fn update_frame_pacing(menu: Res<MenuState>, mut settings: ResMut<WinitSettings>) {
+    let mode =
+        if menu.page == Page::Playing || (menu.page == Page::Home && menu.settings.menu_motion) {
+            UpdateMode::Continuous
+        } else {
+            UpdateMode::reactive_low_power(std::time::Duration::from_millis(33))
+        };
+    if settings.focused_mode != mode {
+        settings.focused_mode = mode;
     }
 }
 
