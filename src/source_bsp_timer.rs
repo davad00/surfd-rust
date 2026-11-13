@@ -11,9 +11,9 @@ use sha2::{Digest, Sha256};
 
 use super::{Entity, Geometry, lookup, parse_vector, sidecar_path, source_axes};
 use crate::catalog::{
-    CatalogEntry, MapMode, SOURCE_RULES_MOVEMENT_SETTINGS, SOURCE_RULES_NORMALIZED_OUTPUTS,
-    SOURCE_RULES_PLAYER_FILTERS, SOURCE_RULES_TICK_INTERVAL, SOURCE_RULES_TIMED_TRIGGERS,
-    valid_source_missing_filters,
+    CatalogEntry, MapMode, SOURCE_RULES_CSS_BHOP, SOURCE_RULES_MOVEMENT_SETTINGS,
+    SOURCE_RULES_NORMALIZED_OUTPUTS, SOURCE_RULES_PLAYER_FILTERS, SOURCE_RULES_TICK_INTERVAL,
+    SOURCE_RULES_TIMED_TRIGGERS, valid_source_missing_filters,
 };
 use crate::course::{
     BonusRoute, Brush, Course, Plane, PlayerOutput, PlayerOutputValue, PlayerOutputZone,
@@ -202,6 +202,11 @@ impl Sidecar {
         }
 
         self.source_movement.validate()?;
+        if self.source_movement.landfix
+            && (self.mode != MapMode::Bhop || self.source_movement.tick_interval().millis() != 10)
+        {
+            return Err("Imported landfix requires a 100 Hz Bhop profile".into());
+        }
         if self.version != 1 {
             return Err(format!("Unsupported timer data version {}", self.version));
         }
@@ -326,6 +331,7 @@ impl Sidecar {
             || (self.source_player_filters && entry.min_source_rules < SOURCE_RULES_PLAYER_FILTERS)
             || (self.source_movement.tick_interval_ms.is_some()
                 && entry.min_source_rules < SOURCE_RULES_TICK_INTERVAL)
+            || (self.source_movement.landfix && entry.min_source_rules < SOURCE_RULES_CSS_BHOP)
             || ((self.source_movement.changes_defaults()
                 || self.source_prestart_target.is_some()
                 || self.source_speedmod

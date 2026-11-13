@@ -382,6 +382,9 @@ pub(crate) fn step_with_index(
         }
         player.velocity.y += JUMP_IMPULSE;
         player.velocity.y -= half_gravity;
+        if rules.movement.landfix {
+            apply_jump_floor_offset(player, &mut collision);
+        }
         result.jumped = true;
     }
     player.jump_held = input.jump;
@@ -615,6 +618,26 @@ fn categorize_ground(player: &mut Player, collision: &mut CollisionWorld<'_>) ->
     }
     None
 }
+
+fn apply_jump_floor_offset(player: &mut Player, collision: &mut CollisionWorld<'_>) {
+    const FLOOR_CLEARANCE: f32 = 1.5;
+    let hull = player.hull();
+    let floor = trace(
+        player.position,
+        player.position - Vec3::Y * (GROUND_PROBE + 0.1),
+        hull,
+        collision,
+    );
+    if floor.fraction >= 1.0 || floor.start_solid || floor.all_solid {
+        return;
+    }
+    let lifted = floor.end + Vec3::Y * FLOOR_CLEARANCE;
+    let fit = trace(floor.end, lifted, hull, collision);
+    if fit.fraction >= 1.0 && !fit.start_solid && !fit.all_solid {
+        player.position = lifted;
+    }
+}
+
 fn update_crouch(player: &mut Player, wants_crouch: bool, collision: &mut CollisionWorld<'_>) {
     if wants_crouch {
         player.crouch_fraction = (player.crouch_fraction + collision.dt / CROUCH_SECONDS).min(1.0);
@@ -1280,6 +1303,63 @@ mod tests {
         assert!(grounded.grounded);
         assert!((grounded.velocity.x - 38.0).abs() < 0.0001);
         assert_eq!(grounded.velocity.z, 0.0);
+    }
+
+    #[test]
+    fn source_landfix_uses_floor_relative_jump_height() {
+        let floor = [box_brush(
+            Vec3::new(-1000.0, -64.0, -1000.0),
+            Vec3::new(1000.0, 0.0, 1000.0),
+        )];
+        let jump = MoveInput {
+            jump: true,
+            ..Default::default()
+        };
+        let mut player = Player::new(Vec3::Y * 0.03125);
+        let mut elevated = Player::new(Vec3::Y * 1.95);
+        let mut legacy = player;
+        let mut candidates = Vec::new();
+        let movement = MovementRules {
+            tick_interval: crate::rules::TickInterval::Source10Ms,
+            landfix: true,
+            ..Default::default()
+        };
+        for player in [&mut player, &mut elevated] {
+            assert!(
+                step_with_index(
+                    player,
+                    jump,
+                    &floor,
+                    None,
+                    &mut candidates,
+                    StepRules {
+                        movement,
+                        ..Default::default()
+                    }
+                )
+                .jumped
+            );
+        }
+        assert_eq!(player.position, elevated.position);
+        assert!(
+            step_with_index(
+                &mut legacy,
+                jump,
+                &floor,
+                None,
+                &mut candidates,
+                StepRules {
+                    movement: MovementRules {
+                        landfix: false,
+                        ..movement
+                    },
+                    ..Default::default()
+                }
+            )
+            .jumped
+        );
+        assert_eq!(player.velocity, legacy.velocity);
+        assert!((player.position.y - legacy.position.y - 1.5).abs() < 0.0001);
     }
 
     fn box_brush(min: Vec3, max: Vec3) -> Brush {

@@ -59,6 +59,7 @@ pub struct MovementRules {
     pub ground_friction: f32,
     pub stop_speed: f32,
     pub tick_interval: TickInterval,
+    pub(crate) landfix: bool,
 }
 
 #[derive(Clone, Copy, Default, Deserialize)]
@@ -70,6 +71,8 @@ pub(crate) struct SourceMovementSettings {
     pub ground_friction: Option<f32>,
     pub stop_speed: Option<f32>,
     pub tick_interval_ms: Option<TickInterval>,
+    #[serde(default)]
+    pub landfix: bool,
 }
 
 impl SourceMovementSettings {
@@ -109,6 +112,7 @@ impl SourceMovementSettings {
             ground_friction: self.ground_friction.unwrap_or(rules.ground_friction),
             stop_speed: self.stop_speed.unwrap_or(rules.stop_speed),
             tick_interval: self.tick_interval(),
+            landfix: self.landfix,
             ..rules
         }
     }
@@ -166,6 +170,7 @@ impl Default for MovementRules {
             ground_friction: DEFAULT_GROUND_FRICTION,
             stop_speed: DEFAULT_STOP_SPEED,
             tick_interval: TickInterval::default(),
+            landfix: false,
         }
     }
 }
