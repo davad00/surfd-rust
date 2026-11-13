@@ -31,6 +31,7 @@ use crate::{
 
 mod backup;
 mod oauth;
+mod trajectory_backfill;
 pub use backup::write_backup;
 use oauth::{OAuth, ProviderIdentity};
 
@@ -103,6 +104,18 @@ const SCHEMA: &str = "
         account INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
         PRIMARY KEY(trajectory_sha256, account)
     ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS ranked_trajectory_backfill (
+        source INTEGER PRIMARY KEY,
+        cursor TEXT
+    );
+    CREATE TABLE IF NOT EXISTS ranked_trajectory_backfill_retry (
+        source INTEGER NOT NULL,
+        replay_id TEXT NOT NULL,
+        retry_at INTEGER NOT NULL,
+        PRIMARY KEY(source, replay_id)
+    ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS ranked_trajectory_backfill_retry_due
+        ON ranked_trajectory_backfill_retry(retry_at);
     CREATE TABLE IF NOT EXISTS ranked_save_reservations (
         id TEXT PRIMARY KEY,
         attempt BLOB NOT NULL UNIQUE,
@@ -334,31 +347,36 @@ pub fn serve(address: SocketAddr, data: &Path, maps: &Path) -> std::result::Resu
     });
     let http = Arc::new(Server::http(address).map_err(|error| error.to_string())?);
     println!("Surf records listening on http://{}", http.server_addr());
-    std::thread::scope(|scope| {
-        let (ranked, queue) = mpsc::sync_channel(VERIFICATION_QUEUE);
-        let queue = Arc::new(Mutex::new(queue));
-        for _ in 0..VERIFICATION_WORKERS {
-            let queue = queue.clone();
-            let service = service.clone();
-            scope.spawn(move || {
-                loop {
-                    let request = queue.lock().ok().and_then(|queue| queue.recv().ok());
-                    let Some(request) = request else { break };
-                    service.respond(request);
-                }
-            });
-        }
-        for _ in 0..HTTP_WORKERS {
-            let http = http.clone();
-            let service = service.clone();
-            let ranked = ranked.clone();
-            scope.spawn(move || {
-                while let Ok(request) = http.recv() {
-                    service.accept_http(request, &ranked);
-                }
-            });
-        }
-        drop(ranked);
+    std::thread::scope(|backfill| {
+        let (_stop_backfill, signal) = mpsc::channel();
+        let backfill_service = service.clone();
+        backfill.spawn(move || trajectory_backfill::run(&backfill_service, &signal));
+        std::thread::scope(|scope| {
+            let (ranked, queue) = mpsc::sync_channel(VERIFICATION_QUEUE);
+            let queue = Arc::new(Mutex::new(queue));
+            for _ in 0..VERIFICATION_WORKERS {
+                let queue = queue.clone();
+                let service = service.clone();
+                scope.spawn(move || {
+                    loop {
+                        let request = queue.lock().ok().and_then(|queue| queue.recv().ok());
+                        let Some(request) = request else { break };
+                        service.respond(request);
+                    }
+                });
+            }
+            for _ in 0..HTTP_WORKERS {
+                let http = http.clone();
+                let service = service.clone();
+                let ranked = ranked.clone();
+                scope.spawn(move || {
+                    while let Ok(request) = http.recv() {
+                        service.accept_http(request, &ranked);
+                    }
+                });
+            }
+            drop(ranked);
+        });
     });
     Ok(())
 }
@@ -1281,10 +1299,7 @@ impl Service {
                 remember_ranked_replay(&transaction, owner, &fingerprint)?;
             }
             if let Some(digest) = &trajectory {
-                transaction.execute(
-                    "INSERT OR IGNORE INTO ranked_trajectory_owners(trajectory_sha256,account) VALUES (?1,?2)",
-                    params![digest.as_slice(), owner],
-                )?;
+                remember_ranked_trajectory(&transaction, owner, digest)?;
             }
         }
         let mode = catalog::find(map).map_or(MapMode::Surf, |entry| entry.mode);
@@ -1619,6 +1634,21 @@ fn copied_ranked_trajectory(
         params![fingerprint.as_slice(), owner],
         |row| row.get(0),
     )
+}
+
+fn remember_ranked_trajectory(
+    db: &Connection,
+    owner: i64,
+    fingerprint: &[u8; 32],
+) -> rusqlite::Result<()> {
+    // The background verifier releases the database lock while simulating. The
+    // account may have been deleted before it finishes.
+    db.execute(
+        "INSERT OR IGNORE INTO ranked_trajectory_owners(trajectory_sha256,account)
+         SELECT ?1,id FROM accounts WHERE id=?2",
+        params![fingerprint.as_slice(), owner],
+    )?;
+    Ok(())
 }
 
 fn remember_ranked_replay(db: &Connection, owner: i64, fingerprint: &str) -> rusqlite::Result<()> {
@@ -2940,6 +2970,171 @@ mod tests {
             rejection.message,
             "This replay was already published by another account."
         );
+    }
+
+    #[test]
+    fn historical_ranked_trajectory_rejects_a_harmless_view_change() {
+        let service = service();
+        let original = finished_downline_with_aim(true);
+        let mut altered = original.clone();
+        altered.commands[0].pitch += 0.001;
+        let revision = versioned_revision(&original.revision);
+        let time_us = replay::verify_ranked(&Course::practice(), &original)
+            .unwrap()
+            .time_us;
+        let [original_owner, other] = {
+            let mut db = service.db.lock().unwrap();
+            db.execute_batch(
+                "INSERT INTO accounts(id,name,password) VALUES (1,'Original',''),(2,'Other','');",
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO best_runs(id,account,map,revision,bonus,time_us,splits,speeds,replay)
+                 VALUES ('historical',1,'Downline',?1,0,?2,'[]','[]',?3)",
+                params![revision, time_us, serde_json::to_string(&original).unwrap()],
+            )
+            .unwrap();
+            index_ranked_replay_owners(&mut db).unwrap();
+            [1, 2].map(|owner| create_session(&db, owner).unwrap().token)
+        };
+        trajectory_backfill::run_pass(&service, |_| true).unwrap();
+        trajectory_backfill::run_pass(&service, |_| true).unwrap();
+        let save = |auth: &str| {
+            let attempt = service
+                .issue(
+                    Some(auth),
+                    AttemptRequest {
+                        map: altered.map.clone(),
+                        bonus: None,
+                    },
+                )
+                .unwrap();
+            service.submit(
+                Some(auth),
+                SubmitRun {
+                    attempt: attempt.token,
+                    replay: altered.clone(),
+                },
+            )
+        };
+        assert_eq!(save(&other).err().map(|error| error.status), Some(409));
+        assert!(!save(&original_owner).unwrap().personal_best);
+        assert_eq!(service.board("downline", None).unwrap().rows.len(), 1);
+    }
+
+    #[test]
+    fn historical_stage_replays_resume_with_all_existing_owners() {
+        let service = service();
+        let course = Course::practice();
+        let original = finished_downline_with_aim(true);
+        let digest = replay::verify_ranked_with_trajectory(&course, &original)
+            .unwrap()
+            .1
+            .unwrap();
+        let mut altered = original.clone();
+        altered.commands[0].pitch += 0.001;
+        let revision = versioned_revision(&original.revision);
+        {
+            let db = service.db.lock().unwrap();
+            db.execute_batch(
+                "INSERT INTO accounts(id,name,password) VALUES (1,'First',''),(2,'Second',''),(3,'Other','');
+                 INSERT INTO stage_replays(id,account,replay) VALUES ('a-corrupt',3,'{');",
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO stage_bests(account,map,revision,bonus,stage,replay_id,time_us,start_tick,end_tick)
+                 VALUES (3,'Downline',?1,0,1,'a-corrupt',1,0,1)",
+                [&revision],
+            )
+            .unwrap();
+            for (id, owner, replay) in [("b-first", 1, &original), ("c-second", 2, &altered)] {
+                db.execute(
+                    "INSERT INTO stage_replays(id,account,replay) VALUES (?1,?2,?3)",
+                    params![id, owner, serde_json::to_string(replay).unwrap()],
+                )
+                .unwrap();
+                db.execute(
+                    "INSERT INTO stage_bests(account,map,revision,bonus,stage,replay_id,time_us,start_tick,end_tick)
+                     VALUES (?1,'Downline',?2,0,1,?3,1,0,1)",
+                    params![owner, revision, id],
+                )
+                .unwrap();
+            }
+            db.execute(
+                "INSERT INTO stage_replays(id,account,replay) VALUES ('d-orphan',3,?1)",
+                [serde_json::to_string(&original).unwrap()],
+            )
+            .unwrap();
+        }
+        // Interrupt between records, then continue from the committed cursor.
+        trajectory_backfill::run_pass(&service, |_| false).unwrap();
+        trajectory_backfill::run_pass(&service, |_| false).unwrap();
+        {
+            let db = service.db.lock().unwrap();
+            assert!(!copied_ranked_trajectory(&db, 1, &digest).unwrap());
+            assert!(copied_ranked_trajectory(&db, 2, &digest).unwrap());
+        }
+        trajectory_backfill::run_pass(&service, |_| true).unwrap();
+        trajectory_backfill::run_pass(&service, |_| panic!("a finished backfill reran")).unwrap();
+        let db = service.db.lock().unwrap();
+        assert!(!copied_ranked_trajectory(&db, 1, &digest).unwrap());
+        assert!(!copied_ranked_trajectory(&db, 2, &digest).unwrap());
+        assert!(copied_ranked_trajectory(&db, 3, &digest).unwrap());
+    }
+
+    #[test]
+    fn historical_trajectory_retries_a_temporarily_unavailable_map() {
+        let mut service = service();
+        service.maps = std::env::temp_dir().join(random_hex::<16>().unwrap());
+        let map = catalog::find("bhop_easy").unwrap();
+        let mut course = Course::practice();
+        course.name = map.id.clone();
+        course.catalog_revision = map.native_board_revision();
+        let mut replay = finished_downline_with_aim(true);
+        replay.map = course.name.clone();
+        replay.revision = course.replay_revision(None).unwrap();
+        let revision = versioned_revision(&replay.revision);
+        let (verified, digest) = replay::verify_ranked_with_trajectory(&course, &replay).unwrap();
+        let digest = digest.unwrap();
+        {
+            let db = service.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO accounts(id,name,password) VALUES (1,'Original','')",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO best_runs(id,account,map,revision,bonus,time_us,splits,speeds,replay)
+                 VALUES ('pending-map',1,?1,?2,0,?3,'[]','[]',?4)",
+                params![
+                    map.id,
+                    revision,
+                    verified.time_us,
+                    serde_json::to_string(&replay).unwrap()
+                ],
+            )
+            .unwrap();
+        }
+        trajectory_backfill::run_pass(&service, |_| true).unwrap();
+        trajectory_backfill::run_pass(&service, |_| panic!("the retry ran early")).unwrap();
+        {
+            let db = service.db.lock().unwrap();
+            assert!(!copied_ranked_trajectory(&db, 2, &digest).unwrap());
+            assert_eq!(
+                db.execute("UPDATE ranked_trajectory_backfill_retry SET retry_at=0", [])
+                    .unwrap(),
+                1
+            );
+        }
+        service
+            .courses
+            .lock()
+            .unwrap()
+            .push_front((map.id.clone(), Arc::new(course)));
+        trajectory_backfill::run_pass(&service, |_| true).unwrap();
+        trajectory_backfill::run_pass(&service, |_| panic!("a resolved retry ran again")).unwrap();
+        let db = service.db.lock().unwrap();
+        assert!(copied_ranked_trajectory(&db, 2, &digest).unwrap());
     }
 
     #[test]
