@@ -1191,6 +1191,26 @@ mod tests {
         assert_ne!(changed.board_revision(None).unwrap(), legacy_board);
         assert_eq!(MovementRules::for_course(&changed).gravity, 400.0);
         assert_eq!(MovementRules::for_course(&changed).air_acceleration, 2.0);
+        doc.as_object_mut().unwrap().remove("source_movement");
+        doc["tracks"][0]["start_speed_cap"] = 350.0.into();
+        entry.source_bsp.as_mut().unwrap().timer_sha256 = install_timer(&doc);
+        assert!(load_ranked_collision(&path, &entry).is_err());
+        doc["tracks"][0]["limit_start_ground_speed"] = true.into();
+        entry.source_bsp.as_mut().unwrap().timer_sha256 = install_timer(&doc);
+        entry.min_source_rules = SOURCE_RULES_MOVEMENT_SETTINGS - 1;
+        assert!(load_ranked_collision(&path, &entry).is_err());
+        entry.min_source_rules = SOURCE_RULES_MOVEMENT_SETTINGS;
+        let capped = load_ranked_collision(&path, &entry).unwrap();
+        assert_ne!(capped.board_revision(None).unwrap(), legacy_board);
+        assert_eq!(
+            capped
+                .map_triggers
+                .source_timer
+                .unwrap()
+                .track(None)
+                .start_speed_cap,
+            Some(350.0)
+        );
         fs::remove_file(&path).unwrap();
         fs::remove_file(&timer_path).unwrap();
         fs::remove_dir(directory).unwrap();

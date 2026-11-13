@@ -1162,7 +1162,10 @@ impl Session {
                     .boosted_start_stages
                     .contains(&self.triggers.stage));
         if restricted && !boosted && (started || left_stage) {
-            self.cap_start_speed(profile.uses_surfd() || format.is_some());
+            self.cap_start_speed(
+                profile.uses_surfd() || format.is_some(),
+                source_track.and_then(|track| track.start_speed_cap),
+            );
         }
 
         let position = self.player.position;
@@ -1592,11 +1595,12 @@ impl Session {
         }
     }
 
-    fn cap_start_speed(&mut self, precise: bool) {
+    fn cap_start_speed(&mut self, precise: bool, track_cap: Option<f32>) {
+        let cap = track_cap.unwrap_or(if self.player.grounded { 325.0 } else { 350.0 });
         if precise {
             let velocity = self.player.velocity.as_dvec3();
             let speed = velocity.x.hypot(velocity.z);
-            let cap = if self.player.grounded { 325.0 } else { 350.0 };
+            let cap = f64::from(cap);
             if speed > cap {
                 self.player.velocity.x = (velocity.x * cap / speed) as f32;
                 self.player.velocity.z = (velocity.z * cap / speed) as f32;
@@ -1604,7 +1608,6 @@ impl Session {
             return;
         }
         let speed = self.player.velocity.x.hypot(self.player.velocity.z);
-        let cap = if self.player.grounded { 325.0 } else { 350.0 };
         if speed > cap {
             let scale = cap / speed;
             self.player.velocity.x *= scale;
@@ -2502,6 +2505,24 @@ mod tests {
         }
         session.tick(&course, jump);
         assert!(session.player.velocity.y > 250.0);
+    }
+
+    #[test]
+    fn imported_start_cap_applies_to_horizontal_speed_on_ground_and_in_air() {
+        let course = course(Vec::new());
+        let mut session = Session::new(&course);
+        for precise in [true, false] {
+            for (grounded, default_cap) in [(true, 325.0), (false, 350.0)] {
+                session.player.grounded = grounded;
+                for (track_cap, expected) in [(None, default_cap), (Some(350.0), 350.0)] {
+                    session.player.velocity = Vec3::new(300.0, -93.0, 400.0);
+                    session.cap_start_speed(precise, track_cap);
+                    let speed = session.player.velocity.x.hypot(session.player.velocity.z);
+                    assert!((speed - expected).abs() < 0.001);
+                    assert_eq!(session.player.velocity.y, -93.0);
+                }
+            }
+        }
     }
 
     #[test]

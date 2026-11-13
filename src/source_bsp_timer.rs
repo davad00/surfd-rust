@@ -111,6 +111,7 @@ pub(crate) struct Track {
     pub(crate) checkpoints_required: bool,
     pub(crate) checkpoints_ordered: bool,
     pub(crate) limit_start_ground_speed: bool,
+    pub(crate) start_speed_cap: Option<f32>,
     bhop_enabled: bool,
     #[serde(skip)]
     start_regions: Vec<(Brush, Option<f32>)>,
@@ -185,6 +186,14 @@ impl Sidecar {
         }
         let mut layouts = BTreeMap::new();
         for track in &self.tracks {
+            if track.start_speed_cap.is_some_and(|cap| {
+                !track.limit_start_ground_speed || !(1.0..=32_768.0).contains(&cap)
+            }) {
+                return Err(format!(
+                    "Invalid start speed cap for imported track {}",
+                    track.id
+                ));
+            }
             if layouts.insert(track.id, Layout::default()).is_some() {
                 return Err("Duplicate imported track number".into());
             }
@@ -279,7 +288,11 @@ impl Sidecar {
             || ((self.source_timed_triggers || self.source_landmark_teleports)
                 && entry.min_source_rules < SOURCE_RULES_TIMED_TRIGGERS)
             || (self.source_player_filters && entry.min_source_rules < SOURCE_RULES_PLAYER_FILTERS)
-            || (self.source_movement.changes_defaults()
+            || ((self.source_movement.changes_defaults()
+                || self
+                    .tracks
+                    .iter()
+                    .any(|track| track.start_speed_cap.is_some()))
                 && entry.min_source_rules < SOURCE_RULES_MOVEMENT_SETTINGS)
             || entry
                 .download
