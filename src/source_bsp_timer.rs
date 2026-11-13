@@ -31,10 +31,17 @@ enum Timer {
     Momentum,
 }
 
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SourceStartPolicy {
+    CssBhopV5,
+}
+
 pub(crate) struct SourceTimer {
     pub(crate) revision: [u8; 32],
     pub(crate) max_velocity: Option<f32>,
     pub(crate) movement_settings: SourceMovementSettings,
+    pub(crate) start_policy: Option<SourceStartPolicy>,
     mode: MapMode,
     tracks: BTreeMap<u16, Track>,
     bhop_regions: Vec<(Option<u16>, Brush)>,
@@ -50,6 +57,7 @@ impl SourceTimer {
                 tick_interval_ms: Some(interval),
                 ..Default::default()
             },
+            start_policy: None,
             mode: MapMode::Bhop,
             tracks: BTreeMap::from([(
                 0,
@@ -130,6 +138,7 @@ pub(super) struct Sidecar {
     source_prestart_target: Option<String>,
     #[serde(default)]
     source_speedmod: bool,
+    source_start_policy: Option<SourceStartPolicy>,
     #[serde(skip)]
     revision: [u8; 32],
 }
@@ -206,6 +215,22 @@ impl Sidecar {
             && (self.mode != MapMode::Bhop || self.source_movement.tick_interval().millis() != 10)
         {
             return Err("Imported landfix requires a 100 Hz Bhop profile".into());
+        }
+        if self.source_start_policy.is_some()
+            && (self.mode != MapMode::Bhop
+                || !matches!(self.timer, Timer::Shavit)
+                || self.source_movement.tick_interval() != TickInterval::Source10Ms
+                || self.tracks.len() != 1
+                || !self.tracks[0].bhop_enabled
+                || self.tracks[0].limit_start_ground_speed
+                || self.zones.iter().any(|zone| {
+                    !matches!(zone.kind, RegionKind::Start | RegionKind::End)
+                        || zone.safe_height.is_some_and(|height| height >= 0.0)
+                }))
+        {
+            return Err(
+                "Imported CSS Bhop timer requires one unrestricted linear 100 Hz track".into(),
+            );
         }
         if self.version != 1 {
             return Err(format!("Unsupported timer data version {}", self.version));
@@ -331,7 +356,8 @@ impl Sidecar {
             || (self.source_player_filters && entry.min_source_rules < SOURCE_RULES_PLAYER_FILTERS)
             || (self.source_movement.tick_interval_ms.is_some()
                 && entry.min_source_rules < SOURCE_RULES_TICK_INTERVAL)
-            || (self.source_movement.landfix && entry.min_source_rules < SOURCE_RULES_CSS_BHOP)
+            || ((self.source_movement.landfix || self.source_start_policy.is_some())
+                && entry.min_source_rules < SOURCE_RULES_CSS_BHOP)
             || ((self.source_movement.changes_defaults()
                 || self.source_prestart_target.is_some()
                 || self.source_speedmod
@@ -598,6 +624,7 @@ impl Sidecar {
         course.map_triggers.source_timer = Some(SourceTimer {
             revision: self.revision,
             movement_settings: self.source_movement,
+            start_policy: self.source_start_policy,
             max_velocity: self.max_velocity.or_else(|| {
                 matches!((self.timer, self.mode), (Timer::Momentum, MapMode::Surf))
                     .then_some(3500.0)

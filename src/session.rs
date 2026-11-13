@@ -120,6 +120,48 @@ struct TriggerState {
     stage_start_recovery: bool,
     teleport_movement_lock: bool,
     imported_start_armed: bool,
+    css_bhop_start: CssBhopStart,
+}
+
+#[derive(Clone, Default)]
+struct CssBhopStart {
+    ground_since: Option<u64>,
+    settled: bool,
+    armed: bool,
+    pending: Option<f64>,
+}
+
+impl CssBhopStart {
+    const PRESPEED: f64 = 290.0;
+
+    fn can_arm(&mut self, tick: u64, player: &Player) -> bool {
+        if !player.grounded || player.on_ladder() {
+            self.ground_since = None;
+            self.settled = false;
+            return false;
+        }
+        let velocity = player.velocity.as_dvec3();
+        let speed_squared = velocity.x * velocity.x + velocity.z * velocity.z;
+        let elapsed_ticks = if let Some(since) = self.ground_since {
+            self.settled |= speed_squared + velocity.y * velocity.y <= 1000.0;
+            tick.saturating_sub(since)
+        } else {
+            self.ground_since = Some(tick);
+            0
+        };
+        speed_squared <= Self::PRESPEED * Self::PRESPEED
+            && (speed_squared <= 50.0 * 50.0 || self.settled || elapsed_ticks >= 50)
+    }
+
+    fn clamp_velocity(player: &mut Player) {
+        let velocity = player.velocity.as_dvec3();
+        let speed = (velocity.x * velocity.x + velocity.z * velocity.z).sqrt();
+        if speed > Self::PRESPEED && speed <= Self::PRESPEED + 32.0 {
+            let scale = Self::PRESPEED / speed;
+            player.velocity.x = (velocity.x * scale) as f32;
+            player.velocity.z = (velocity.z * scale) as f32;
+        }
+    }
 }
 
 impl TriggerState {
@@ -724,6 +766,9 @@ impl Session {
         let hull = TriggerHull::for_player(&self.player, precise_triggers);
         let map = &course.map_triggers;
         let source_timer = map.source_timer.as_ref();
+        let css_bhop_timer = source_timer.is_some_and(|timer| {
+            timer.start_policy == Some(crate::source_bsp::SourceStartPolicy::CssBhopV5)
+        });
         let source_track = source_timer.map(|timer| timer.track(self.bonus));
         let bhop_allowed = source_timer.is_none_or(|timer| {
             timer.auto_bhop(self.bonus, |brush| {
@@ -731,6 +776,7 @@ impl Session {
             })
         });
         if let Some(timer) = source_timer
+            && !css_bhop_timer
             && !self.triggers.teleport_movement_lock
         {
             self.triggers.imported_start_armed |=
@@ -886,6 +932,7 @@ impl Session {
         }
         let hull = TriggerHull::for_player(&self.player, precise_triggers);
         if let Some(timer) = source_timer
+            && !css_bhop_timer
             && !self.triggers.teleport_movement_lock
         {
             self.triggers.imported_start_armed |=
@@ -928,6 +975,8 @@ impl Session {
         let mut finished = false;
         let mut teleported = false;
         let mut segment_end = 1.0;
+        let mut start_exit = None;
+        let mut finish_entry = None;
         for (at, event) in events {
             if self.triggers.teleport_movement_lock
                 && matches!(
@@ -941,8 +990,14 @@ impl Session {
                 continue;
             }
             match event {
+                ZoneEvent::StartExit if css_bhop_timer => start_exit = Some(at),
+                ZoneEvent::Finish if css_bhop_timer && finish_entry.is_none() => {
+                    finish_entry = Some(at);
+                }
                 ZoneEvent::StartEntry
-                    if self.phase == RunPhase::Running && !self.triggers.stage_start_recovery =>
+                    if !css_bhop_timer
+                        && self.phase == RunPhase::Running
+                        && !self.triggers.stage_start_recovery =>
                 {
                     self.clear_run();
                     self.triggers.stage = 1;
@@ -993,7 +1048,8 @@ impl Session {
                     self.triggers.practice_stage = u16::try_from(index + 2).ok();
                 }
                 ZoneEvent::Finish
-                    if self.phase == RunPhase::Running
+                    if !css_bhop_timer
+                        && self.phase == RunPhase::Running
                         && (source_track.is_some_and(|track| !track.checkpoints_required)
                             || self.splits.len() == self.checkpoint_count()) =>
                 {
@@ -1181,6 +1237,44 @@ impl Session {
             self.restart(course);
             return Some(self.spawn_yaw(course));
         }
+        if css_bhop_timer && self.practice.is_none() {
+            let start_at = if movement.jumped || teleported {
+                0.0
+            } else {
+                start_exit.unwrap_or(0.0)
+            };
+            let touches_finish = |position| {
+                zones.iter().any(|zone| {
+                    matches!(zone.kind, ZoneKind::Finish) && hull.touches(zone, position)
+                })
+            };
+            let finish_at =
+                if touches_finish(to) && (!teleported || self.phase == RunPhase::Running) {
+                    Some(finish_entry.unwrap_or(1.0))
+                } else if touches_finish(position) {
+                    Some(1.0)
+                } else {
+                    None
+                };
+            let jump_armed = movement.categorized_ground_jump.is_some_and(|player| {
+                let velocity = player.velocity.as_dvec3();
+                !self.player.on_ladder()
+                    && velocity.x * velocity.x + velocity.z * velocity.z <= 50.0 * 50.0
+                    && start_brush(
+                        zones,
+                        &ZoneKind::Start,
+                        player.position,
+                        TriggerHull::for_player(&player, precise_triggers),
+                    )
+                    .is_some()
+            });
+            (started, finished) = self.observe_css_bhop_start(
+                start_brush(zones, &ZoneKind::Start, position, hull).is_some(),
+                start_at,
+                finish_at,
+                jump_armed,
+            );
+        }
         if self.phase == RunPhase::Running {
             self.elapsed = self.time_at(1.0, running_from);
         }
@@ -1193,6 +1287,52 @@ impl Session {
         }
         self.previous_yaw = view_yaw.unwrap_or(input.yaw);
         view_yaw
+    }
+
+    fn observe_css_bhop_start(
+        &mut self,
+        in_start: bool,
+        start_at: f64,
+        finish_at: Option<f64>,
+        jump_armed: bool,
+    ) -> (bool, bool) {
+        let tick = self.triggers.tick;
+        let start = &mut self.triggers.css_bhop_start;
+        let armed = start.can_arm(tick, &self.player) && in_start;
+        if (armed || jump_armed) && !(self.phase == RunPhase::Running && finish_at.is_some()) {
+            start.armed = true;
+            start.pending = None;
+            self.clear_run();
+        }
+        if armed && self.phase == RunPhase::Ready {
+            return (false, false);
+        }
+
+        let start = &mut self.triggers.css_bhop_start;
+        let first_tick = tick.saturating_sub(1) as f64;
+        let quantize = |phase: f64| (phase * 1_000_000.0).round() / 1_000_000.0;
+        if std::mem::take(&mut start.armed) && self.phase == RunPhase::Ready {
+            start.pending = Some(first_tick + quantize(start_at));
+            CssBhopStart::clamp_velocity(&mut self.player);
+        }
+        let started = self.phase == RunPhase::Ready && !in_start && start.pending.is_some();
+        if started {
+            self.run_start_tick = start.pending.take();
+            self.phase = RunPhase::Running;
+        }
+        let finished = self.phase == RunPhase::Running && finish_at.is_some();
+        if let Some(at) = finish_at.filter(|_| finished) {
+            let elapsed_ticks = first_tick + quantize(at) - self.run_start_tick.unwrap();
+            self.elapsed = (elapsed_ticks.max(0.0) * f64::from(self.tick_interval().millis()))
+                .round()
+                / 1000.0;
+            self.best = Some(
+                self.best
+                    .map_or(self.elapsed, |best| best.min(self.elapsed)),
+            );
+            self.phase = RunPhase::Finished;
+        }
+        (started, finished)
     }
 
     pub fn take_finished_replay(&mut self, course: &Course) -> Option<RunReplay> {
@@ -2511,6 +2651,61 @@ mod tests {
         }
         session.tick(&course, jump);
         assert!(session.player.velocity.y > 250.0);
+    }
+
+    #[test]
+    fn css_bhop_start_remembers_takeoff_and_keeps_boosts() {
+        let course = course(vec![
+            zone(-100.0, 100.0, ZoneKind::Start),
+            zone(140.0, 150.0, ZoneKind::Finish),
+        ]);
+        let mut session = Session::new(&course);
+        session.triggers.tick = 100;
+        session.player.grounded = true;
+        assert_eq!(
+            session.observe_css_bhop_start(true, 0.0, None, false),
+            (false, false)
+        );
+        session.triggers.tick = 101;
+        session.player.grounded = false;
+        session.player.velocity = Vec3::new(300.0, 10.0, 0.0);
+        assert_eq!(
+            session.observe_css_bhop_start(true, 0.0, None, false),
+            (false, false)
+        );
+        assert_eq!(session.player.velocity, Vec3::new(290.0, 10.0, 0.0));
+        session.triggers.tick = 106;
+        assert_eq!(
+            session.observe_css_bhop_start(false, 0.4, None, false),
+            (true, false)
+        );
+        assert_eq!(session.run_start_tick, Some(100.0));
+
+        session.restart(&course);
+        session.player.grounded = true;
+        session.observe_css_bhop_start(true, 0.0, None, false);
+        session.player.grounded = false;
+        session.player.velocity.x = 400.0;
+        session.observe_css_bhop_start(false, 0.5, None, false);
+        assert_eq!(session.player.velocity.x, 400.0);
+    }
+
+    #[test]
+    fn css_bhop_timer_waits_for_fifty_ground_ticks_when_moving() {
+        let mut player = Player::new(Vec3::ZERO);
+        player.grounded = true;
+        player.velocity.x = 200.0;
+        let mut start = CssBhopStart::default();
+        assert!(!start.can_arm(1, &player));
+        assert!(!start.can_arm(50, &player));
+        assert!(start.can_arm(51, &player));
+        player.velocity.x = 291.0;
+        assert!(!start.can_arm(52, &player));
+        player.grounded = false;
+        assert!(!start.can_arm(53, &player));
+        player.grounded = true;
+        player.velocity.x = 50.0;
+        assert!(start.can_arm(54, &player));
     }
 
     #[test]

@@ -82,6 +82,10 @@ impl Player {
         (self.position + hull.min, self.position + hull.max)
     }
 
+    pub(crate) fn on_ladder(&self) -> bool {
+        self.ladder_normal.is_some()
+    }
+
     fn hull(&self) -> Hull {
         if self.crouched {
             Hull::new(CROUCH_HEIGHT)
@@ -260,6 +264,7 @@ impl MovementSegments {
 #[derive(Default)]
 pub(crate) struct MovementResult {
     pub jumped: bool,
+    pub categorized_ground_jump: Option<Player>,
     pub blocked: bool,
     pub segments: MovementSegments,
     pub pre_collision_velocity: Vec3,
@@ -298,6 +303,7 @@ pub(crate) fn step_with_index(
         },
     };
     let mut result = MovementResult::default();
+    let previously_grounded = player.grounded;
     if player.needs_ground_probe || rules.recheck_ground.is_some() {
         categorize_ground(player, &mut collision);
         player.needs_ground_probe = false;
@@ -375,6 +381,9 @@ pub(crate) fn step_with_index(
     player.velocity.y += push.y * dt;
     clamp_velocity(&mut player.velocity, rules.movement.max_velocity);
     if input.jump && player.grounded && (!player.jump_held || rules.auto_bhop) {
+        if !previously_grounded {
+            result.categorized_ground_jump = Some(*player);
+        }
         player.grounded = false;
         player.ground_brush = None;
         if player.crouch_fraction > 0.0 {

@@ -23,7 +23,7 @@ use crate::source_material::Materials;
 mod gameplay;
 #[path = "source_bsp_timer.rs"]
 mod timer;
-pub(crate) use timer::SourceTimer;
+pub(crate) use timer::{SourceStartPolicy, SourceTimer};
 
 #[path = "source_lightmap.rs"]
 pub(crate) mod lightmap;
@@ -1145,7 +1145,9 @@ mod tests {
     #[test]
     fn source_settings_require_the_pinned_timer_and_supported_rules() {
         use crate::{
-            catalog::{SOURCE_RULES_MOVEMENT_SETTINGS, SOURCE_RULES_TICK_INTERVAL},
+            catalog::{
+                SOURCE_RULES_CSS_BHOP, SOURCE_RULES_MOVEMENT_SETTINGS, SOURCE_RULES_TICK_INTERVAL,
+            },
             movement::MoveInput,
             rules::{MovementRules, TickInterval},
             session::{RunPhase, Session},
@@ -1214,6 +1216,24 @@ mod tests {
             Session::new(&source_100hz).tick_interval(),
             TickInterval::Source10Ms
         );
+        doc["source_start_policy"] = "css_bhop_v5".into();
+        entry.source_bsp.as_mut().unwrap().timer_sha256 = install_timer(&doc);
+        assert!(load_ranked_collision(&path, &entry).is_err());
+        entry.min_source_rules = SOURCE_RULES_CSS_BHOP;
+        let css_bhop = load_ranked_collision(&path, &entry).unwrap();
+        assert_ne!(
+            css_bhop.board_revision(None),
+            source_100hz.board_revision(None)
+        );
+        assert!(
+            css_bhop
+                .map_triggers
+                .source_timer
+                .unwrap()
+                .start_policy
+                .is_some()
+        );
+        doc.as_object_mut().unwrap().remove("source_start_policy");
         doc["source_movement"]["tick_interval_ms"] = 15.into();
         entry.source_bsp.as_mut().unwrap().timer_sha256 = install_timer(&doc);
         entry.min_source_rules = SOURCE_RULES_MOVEMENT_SETTINGS;
