@@ -165,14 +165,14 @@ fn launch() -> Result<(), String> {
             if args.next().is_some() {
                 return Err(USAGE.to_owned());
             }
-            view::run(
+            return view::run(
                 Course::practice(),
                 None,
                 Some(bench::BenchRequest {
                     source: library::MapSource::Source(path),
                     replay: None,
                 }),
-            )
+            );
         }
         Some("--replay" | "--inspect-replay" | "--bench-replay") => {
             let path = PathBuf::from(args.next().ok_or("Expected a replay file")?);
