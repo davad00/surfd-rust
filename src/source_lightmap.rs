@@ -166,22 +166,29 @@ impl<'a> Lightmaps<'a> {
 
     pub fn append(self, textures: &mut Vec<CourseTexture>, surfaces: &mut [Surface]) {
         let start = textures.len();
-        textures.extend(
-            self.pages
-                .into_iter()
-                .enumerate()
-                .map(|(index, page)| CourseTexture {
-                    bc: None,
-                    name: format!("source-lightmap-{index}"),
-                    width: PAGE_SIZE as u32,
-                    height: PAGE_SIZE as u32,
-                    rgba: page.pixels,
-                    alpha: TextureAlpha::Opaque,
-                }),
-        );
+        textures.extend(self.pages.into_iter().enumerate().map(|(index, mut page)| {
+            let height = (page.y + page.row_height).next_power_of_two();
+            page.pixels.truncate(PAGE_SIZE * height * 4);
+            CourseTexture {
+                bc: None,
+                name: format!("source-lightmap-{index}"),
+                width: PAGE_SIZE as u32,
+                height: height as u32,
+                rgba: page.pixels,
+                alpha: TextureAlpha::Opaque,
+            }
+        }));
         for surface in surfaces {
             if let Some(lightmap) = &mut surface.lightmap {
                 lightmap.index += start;
+                let height = textures[lightmap.index].height;
+                if height != PAGE_SIZE as u32 {
+                    // Both page heights are powers of two, preserving the sampled texel coordinate.
+                    let scale = PAGE_SIZE as f32 / height as f32;
+                    for uv in &mut lightmap.uvs {
+                        uv[1] *= scale;
+                    }
+                }
             }
         }
     }
@@ -220,5 +227,42 @@ mod tests {
         assert_eq!(lightmap.uvs[1], [3.5 / 1024.0, 2.5 / 1024.0]);
         assert_eq!(pixel(0, 0), [100, 45, 25, 255]);
         assert_eq!(pixel(3, 2), [105, 50, 30, 255]);
+    }
+
+    #[test]
+    fn trimmed_lightmap_retains_padding_and_samples_the_same_texels() {
+        let mut maps = Lightmaps::new(&[200, 90, 50, 255, 210, 100, 60, 255]);
+        let lightmap = maps
+            .surface(
+                FaceLightmap {
+                    offset: 0,
+                    mins: [0; 2],
+                    extents: [0, 1],
+                },
+                [(Vec3::X, 0.0), (Vec3::Z, 0.0)],
+                &[Vec3::ZERO, Vec3::Z * 0.375, Vec3::Z],
+            )
+            .unwrap();
+        let old_uvs = lightmap.uvs.clone();
+        let mut surfaces = [Surface {
+            vertices: Vec::new(),
+            color: [1.0; 3],
+            texture: None,
+            lightmap: Some(lightmap),
+        }];
+        let old_pixels = maps.pages[0].pixels[..PAGE_SIZE * 8 * 4].to_vec();
+        let old_allocation = maps.pages[0].pixels.as_ptr();
+        let mut textures = Vec::new();
+        maps.append(&mut textures, &mut surfaces);
+
+        let texture = &textures[0];
+        assert_eq!((texture.width, texture.height), (PAGE_SIZE as u32, 8));
+        assert_eq!(texture.rgba, old_pixels);
+        assert_eq!(texture.rgba.as_ptr(), old_allocation);
+        let lightmap = surfaces[0].lightmap.as_ref().unwrap();
+        for (old, new) in old_uvs.iter().zip(&lightmap.uvs) {
+            assert_eq!(old[0], new[0]);
+            assert_eq!(old[1] * PAGE_SIZE as f32, new[1] * texture.height as f32);
+        }
     }
 }
