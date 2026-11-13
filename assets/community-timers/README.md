@@ -58,6 +58,12 @@ Satellite Fix uses the BSP's authored gravity outputs. Tranquil uses the authore
 
 Across these three maps, 375 posted SurfHeaven times fall within the display's rounding tolerance of a 64 Hz clock. The records do not identify the BSP by checksum or expose command replays. The 64 Hz inference applies to those boards, and the Practice settings use the native 15 ms clock. [Greensway records](https://csgo.surfheaven.eu/map/surf_greensway) · [Satellite Fix records](https://csgo.surfheaven.eu/map/surf_satellite_fix) · [Tranquil records](https://csgo.surfheaven.eu/map/surf_tranquil)
 
+## Counter-Strike: Global Offensive Forbidden Ways
+
+Krusty's **Forbidden Ways (CS:GO)** is a Tier 1 Practice course with six main checkpoints, two main finish zones, and one bonus. The original Workshop BSP matches the SurfZones archive's size and MD5. Practice uses a 15 ms step, air acceleration of 150, ground acceleration of 10, friction of 5.2, a 3,500-unit per-axis velocity cap, and a 260-unit start-speed limit on both routes. [Workshop release](https://steamcommunity.com/sharedfiles/filedetails/?id=675060874) · [SurfZones timer archive](https://github.com/Sayt123/SurfZones/tree/78b5d079f0534eeb464ad1cdf8137a65713522d9)
+
+Source rules revision 8 applies the archive's Stripper correction to the start booster with Hammer ID 2808. A native movement probe measured 60 units of travel through the corrected booster in one tick, up from 12 units on the unmodified BSP. Both starts reached the grounded, ready state. The historical server tickrate and full-route replay parity remain unverified. [Authored Stripper configuration](https://raw.githubusercontent.com/Sayt123/SurfZones/78b5d079f0534eeb464ad1cdf8137a65713522d9/Stripper%20Files/maps/surf_forbidden_ways_ksf.cfg)
+
 ## Counter-Strike: Source Surf course credits
 
 The four wrldspawn timers use the Unlicense course data. The other timers reference each map author's compiled timer brushes directly, with published tiers and named authors from KSF. KSF lists 0 for some speed caps, which indicates an unspecified per-map override. The documented native 5,000-unit per-axis cap applies on those maps. This is the desktop ranked ruleset.
