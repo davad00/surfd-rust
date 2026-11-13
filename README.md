@@ -130,6 +130,8 @@ Use `--bench-replay TRACK.json` to render a desktop replay to a 1280×800 GPU im
 
 Use `--bench-map FILE.bsp` to measure a local course at its spawn without a replay. With `SURF_SOURCE_BC=1`, supported adapters upload compatible VTF textures in their original block format. The decoded path remains the default while this mode is being evaluated.
 
+Across 30 tested Source maps, tighter lightmap packing reduced baked texture uploads from 496 MiB to 259 MiB. Simpsons Source used 26 MiB instead of 36 MiB. The packer preserves the original texels and edge padding. CPU sampling on four maps found a maximum difference under 0.02 of one 8-bit color step from remapped UV rounding.
+
 Set `SURF_BENCH_AVATAR_COUNT` from 1 to 63 to place that many players in front of the initial replay camera. Hold the replay frame to compare the same crowd view between runs. Set `SURF_BENCH_SERIAL_PACKS=1` to compare serial map pack inflation with the bounded worker path.
 
 Set `SURF_BENCH_ALL_LODS=1` to compare Boreas with off-screen model detail updates enabled.
