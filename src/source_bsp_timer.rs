@@ -12,8 +12,8 @@ use sha2::{Digest, Sha256};
 use super::{Entity, Geometry, lookup, parse_vector, sidecar_path, source_axes};
 use crate::catalog::{
     CatalogEntry, MapMode, SOURCE_RULES_CSS_BHOP, SOURCE_RULES_MOVEMENT_SETTINGS,
-    SOURCE_RULES_NORMALIZED_OUTPUTS, SOURCE_RULES_PLAYER_FILTERS, SOURCE_RULES_TICK_INTERVAL,
-    SOURCE_RULES_TIMED_TRIGGERS, valid_source_missing_filters,
+    SOURCE_RULES_NORMALIZED_OUTPUTS, SOURCE_RULES_PLAYER_FILTERS, SOURCE_RULES_STAGE_DROP_SPAWNS,
+    SOURCE_RULES_TICK_INTERVAL, SOURCE_RULES_TIMED_TRIGGERS, valid_source_missing_filters,
 };
 use crate::course::{
     BonusRoute, Brush, Course, Plane, PlayerOutput, PlayerOutputValue, PlayerOutputZone,
@@ -21,8 +21,10 @@ use crate::course::{
     ZoneKind,
 };
 use crate::rules::{SourceMovementSettings, TickInterval};
+use crate::session::Session;
 
 const MAX_BYTES: u64 = 2 * 1024 * 1024;
+const SOURCE_STAGE_DROP_HEIGHT: f32 = 128.0;
 
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -42,6 +44,7 @@ pub(crate) struct SourceTimer {
     pub(crate) max_velocity: Option<f32>,
     pub(crate) movement_settings: SourceMovementSettings,
     pub(crate) start_policy: Option<SourceStartPolicy>,
+    pub(crate) stage_one_drop_restart: bool,
     mode: MapMode,
     tracks: BTreeMap<u16, Track>,
     bhop_regions: Vec<(Option<u16>, Brush)>,
@@ -58,6 +61,7 @@ impl SourceTimer {
                 ..Default::default()
             },
             start_policy: None,
+            stage_one_drop_restart: false,
             mode: MapMode::Bhop,
             tracks: BTreeMap::from([(
                 0,
@@ -136,6 +140,8 @@ pub(super) struct Sidecar {
     #[serde(default)]
     source_player_filters: bool,
     source_prestart_target: Option<String>,
+    #[serde(default)]
+    source_stage_drop_spawns: bool,
     #[serde(default)]
     source_speedmod: bool,
     source_start_policy: Option<SourceStartPolicy>,
@@ -244,6 +250,20 @@ impl Sidecar {
             .is_some_and(|target| !literal_target_name(target, true))
         {
             return Err("Imported prestart needs a literal BSP destination".into());
+        }
+        if self.source_stage_drop_spawns
+            && (!self.zones.iter().any(|zone| zone.kind == RegionKind::Stage)
+                || self.zones.iter().any(|zone| {
+                    zone.kind == RegionKind::Stage
+                        && zone
+                            .target
+                            .as_deref()
+                            .is_some_and(|target| !literal_target_name(target, true))
+                }))
+        {
+            return Err(
+                "Imported stage drops need staged timer data and literal BSP destinations".into(),
+            );
         }
         if self.bsp_sha256.len() != 64
             || !self.bsp_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -354,6 +374,8 @@ impl Sidecar {
             || ((self.source_timed_triggers || self.source_landmark_teleports)
                 && entry.min_source_rules < SOURCE_RULES_TIMED_TRIGGERS)
             || (self.source_player_filters && entry.min_source_rules < SOURCE_RULES_PLAYER_FILTERS)
+            || (self.source_stage_drop_spawns
+                && entry.min_source_rules < SOURCE_RULES_STAGE_DROP_SPAWNS)
             || (self.source_movement.tick_interval_ms.is_some()
                 && entry.min_source_rules < SOURCE_RULES_TICK_INTERVAL)
             || ((self.source_movement.landfix.is_some() || self.source_start_policy.is_some())
@@ -429,6 +451,7 @@ impl Sidecar {
         let mut starts = BTreeMap::<u16, PracticeSpawn>::new();
         let mut stages = BTreeMap::<u16, (Vec<Brush>, Option<PracticeSpawn>)>::new();
         let mut bhop_regions = Vec::new();
+        let mut stage_one_drop_restart = false;
         for region in self.zones {
             if region
                 .safe_height
@@ -483,7 +506,23 @@ impl Sidecar {
                     let stage = stages.entry(number).or_default();
                     stage.0.extend(brushes.iter().cloned());
                     if let Some(target) = &region.target {
-                        stage.1 = Some(spawn_target(entities, target, format!("Stage {number}"))?);
+                        let name = format!("Stage {number}");
+                        if self.source_stage_drop_spawns {
+                            if stage.1.is_some() {
+                                return Err(format!(
+                                    "Imported stage {number} has multiple drop destinations"
+                                ));
+                            }
+                            stage.1 = Some(authored_drop_spawn(
+                                entities,
+                                &effects,
+                                target,
+                                &name,
+                                extended_names,
+                            )?);
+                        } else {
+                            stage.1 = Some(spawn_target(entities, target, name)?);
+                        }
                     }
                     routes
                         .entry(track)
@@ -526,15 +565,32 @@ impl Sidecar {
             if id == 0
                 && let Some(target) = &self.source_prestart_target
             {
-                let entity = unique_source_entity(
-                    entities,
-                    target,
-                    &["info_teleport_destination"],
-                    extended_names,
-                )?;
-                let prestart = entity_spawn(entity, "Start")
-                    .ok_or_else(|| format!("Invalid prestart destination {target}"))?;
-                if spawn.is_some() || contains_start(prestart.position) {
+                let prestart = if self.source_stage_drop_spawns {
+                    let prestart =
+                        authored_drop_spawn(entities, &effects, target, "Start", extended_names)?;
+                    if !zones.iter().any(|zone| {
+                        matches!(zone.kind, ZoneKind::Start)
+                            && above_start(&zone.brush, prestart.position)
+                    }) {
+                        return Err(format!(
+                            "Imported prestart {target} is not above the main start"
+                        ));
+                    }
+                    stage_one_drop_restart = true;
+                    prestart
+                } else {
+                    let entity = unique_source_entity(
+                        entities,
+                        target,
+                        &["info_teleport_destination"],
+                        extended_names,
+                    )?;
+                    entity_spawn(entity, "Start")
+                        .ok_or_else(|| format!("Invalid prestart destination {target}"))?
+                };
+                if spawn.is_some()
+                    || (!self.source_stage_drop_spawns && contains_start(prestart.position))
+                {
                     return Err(
                         "Imported prestart must be separate from the main timer start".into(),
                     );
@@ -585,16 +641,21 @@ impl Sidecar {
                 if usize::from(number) != starts.len() + 1 {
                     return Err("Imported stages must be numbered consecutively from 2".into());
                 }
+                if spawn.is_none() && self.source_stage_drop_spawns {
+                    return Err(format!(
+                        "Imported stage {number} needs an explicit BSP drop destination"
+                    ));
+                }
                 if spawn.is_none() && matches!(self.timer, Timer::Shavit) {
                     spawn = unique_map_spawn(entities, &format!("Stage {number}"), |position| {
                         brushes.iter().any(|brush| near_start(brush, position))
                     });
                 }
                 if let Some(spawn) = spawn {
-                    if !brushes
-                        .iter()
-                        .any(|brush| near_start(brush, spawn.position))
-                    {
+                    if !brushes.iter().any(|brush| {
+                        near_start(brush, spawn.position)
+                            || (self.source_stage_drop_spawns && above_start(brush, spawn.position))
+                    }) {
                         return Err(format!(
                             "Imported stage {number} spawn is outside the start"
                         ));
@@ -625,6 +686,7 @@ impl Sidecar {
             revision: self.revision,
             movement_settings: self.source_movement,
             start_policy: self.source_start_policy,
+            stage_one_drop_restart,
             max_velocity: self.max_velocity.or_else(|| {
                 matches!((self.timer, self.mode), (Timer::Momentum, MapMode::Surf))
                     .then_some(3500.0)
@@ -633,6 +695,25 @@ impl Sidecar {
             tracks,
             bhop_regions,
         });
+        if self.source_stage_drop_spawns {
+            let mut session = Session::new(course);
+            let stage_spawns = &course.map_triggers.authored_stage_spawns;
+            if stage_spawns.len() != course.practice_spawns.len() + 1 {
+                return Err("Imported stage drop course is missing authored starts".into());
+            }
+            if stage_one_drop_restart && !session.settles_in_source_stage(course, 1) {
+                return Err("Imported prestart does not settle inside the main start".into());
+            }
+            for (index, spawn) in course.practice_spawns.iter().enumerate() {
+                session.set_practice(course, Some(spawn));
+                let stage = index + 2;
+                if !session.settles_in_source_stage(course, stage as u16) {
+                    return Err(format!(
+                        "Imported stage {stage} drop does not settle inside the start"
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -645,6 +726,35 @@ fn near_start(brush: &Brush, position: Vec3) -> bool {
             .iter()
             .filter(|plane| plane.normal.y == 0.0)
             .all(|plane| plane.normal.dot(position) <= plane.distance + 0.01)
+}
+
+fn above_start(brush: &Brush, position: Vec3) -> bool {
+    position.y > brush.max.y
+        && position.y <= brush.max.y + SOURCE_STAGE_DROP_HEIGHT
+        && near_start(brush, position.with_y(brush.max.y))
+}
+
+fn authored_drop_spawn(
+    entities: &[Entity<'_>],
+    effects: &[Zone],
+    target: &str,
+    name: &str,
+    extended_names: bool,
+) -> Result<PracticeSpawn, String> {
+    let entity = unique_source_entity(
+        entities,
+        target,
+        &["info_teleport_destination"],
+        extended_names,
+    )?;
+    let spawn =
+        entity_spawn(entity, name).ok_or_else(|| format!("Invalid position for {target}"))?;
+    if !effects.iter().any(|zone| {
+        matches!(zone.kind, ZoneKind::Teleport { position, .. } if position == spawn.position)
+    }) {
+        return Err(format!("Imported stage drop {target} is not an active BSP teleport destination"));
+    }
+    Ok(spawn)
 }
 
 fn spawn_target(

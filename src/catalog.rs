@@ -105,13 +105,14 @@ pub struct CatalogEntry {
     pub download: Option<SourceDownload>,
 }
 
-pub const SOURCE_MAP_RULES: u8 = 7;
+pub const SOURCE_MAP_RULES: u8 = 8;
 pub(crate) const SOURCE_RULES_NORMALIZED_OUTPUTS: u8 = 2;
 pub(crate) const SOURCE_RULES_TIMED_TRIGGERS: u8 = 3;
 pub(crate) const SOURCE_RULES_PLAYER_FILTERS: u8 = 4;
 pub(crate) const SOURCE_RULES_MOVEMENT_SETTINGS: u8 = 5;
 pub(crate) const SOURCE_RULES_TICK_INTERVAL: u8 = 6;
 pub(crate) const SOURCE_RULES_CSS_BHOP: u8 = 7;
+pub(crate) const SOURCE_RULES_STAGE_DROP_SPAWNS: u8 = 8;
 
 fn is_zero(value: &u8) -> bool {
     *value == 0

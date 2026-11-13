@@ -56,6 +56,8 @@ These Workshop downloads match the BSP sizes and MD5 checksums published by the 
 
 Satellite Fix uses the BSP's authored gravity outputs. Tranquil uses the authored bonus spawns and preserves both main finish zones. Each entry has a separate ID from its Counter-Strike: Source counterpart.
 
+[Aweles](https://steamcommunity.com/sharedfiles/filedetails/?id=523350484) by Mazzo is Tier 1 with five stages, four checkpoints, and no bonuses. Its stage starts use the compiled map's original reset destinations. These are above the timer brushes, so the player falls into each start at the original map position and yaw. Practice uses a 260-unit start-speed limit.
+
 Across these three maps, 375 posted SurfHeaven times fall within the display's rounding tolerance of a 64 Hz clock. The records do not identify the BSP by checksum or expose command replays. The 64 Hz inference applies to those boards, and the Practice settings use the native 15 ms clock. [Greensway records](https://csgo.surfheaven.eu/map/surf_greensway) · [Satellite Fix records](https://csgo.surfheaven.eu/map/surf_satellite_fix) · [Tranquil records](https://csgo.surfheaven.eu/map/surf_tranquil)
 
 ## Counter-Strike: Source Surf course credits
