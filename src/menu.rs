@@ -2447,7 +2447,17 @@ mod tests {
         let data = std::env::temp_dir().join(format!("surfd-practice-menu-{}", std::process::id()));
         let mut app = open_surf_school(&data);
         let mut library = app.world_mut().resource_mut::<MapLibrary>();
-        library.entries.retain(|entry| !entry.is_local());
+        let practice_id = "practice:bhop_flartstrafe_simpsons";
+        library.entries.retain(|entry| {
+            !entry.is_local() && (!entry.is_practice_download() || entry.id == practice_id)
+        });
+        let practice_name = library
+            .entries
+            .iter()
+            .find(|entry| entry.id == practice_id)
+            .unwrap()
+            .name
+            .clone();
         let index = library.entries.len();
         library.entries.push(MapEntry {
             id: "local:bhop_easy".into(),
@@ -2469,6 +2479,7 @@ mod tests {
             matches!(action, Action::MapMode(MapMode::Bhop))
         });
         assert!(has_text(app.world_mut(), "bhop_easy"));
+        assert!(has_text(app.world_mut(), &practice_name));
         assert!(has_text(app.world_mut(), "Tier 2"));
         assert!(!has_text(app.world_mut(), "Downline"));
         assert!(
@@ -2482,6 +2493,7 @@ mod tests {
             matches!(action, Action::Open(Page::Maps))
         });
         assert!(!app.world().resource::<MenuState>().local_maps_only);
+        assert!(!has_text(app.world_mut(), &practice_name));
         choose_menu_action(&mut app, |action| {
             matches!(action, Action::MapMode(MapMode::Surf))
         });

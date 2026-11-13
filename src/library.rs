@@ -17,6 +17,7 @@ use bevy_surf::{
 };
 
 pub const STARTER_MAP: &str = "surf_kitsune";
+const BUNDLED_PRACTICE_CATALOG: &[u8] = include_bytes!("../assets/practice-source-catalog.json");
 
 fn environment_directory(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
@@ -141,9 +142,8 @@ mod local_map_tests {
 
     #[test]
     fn practice_manifest_entries_cannot_replace_ranked_maps_or_join_rooms() {
-        let manifest = serde_json::json!({
-            "version": 1,
-            "maps": ["surf_kitsune", "bhop_practice_catalog_fixture"].map(|id| serde_json::json!({
+        let maps = ["surf_kitsune", "bhop_practice_catalog_fixture"].map(|id| {
+            serde_json::json!({
                 "id": id,
                 "slug": id,
                 "name": id,
@@ -160,11 +160,17 @@ mod local_map_tests {
                     "stages": 0,
                     "checkpoints": 0
                 }
-            }))
+            })
         });
+        let manifest = serde_json::json!({"version": 1, "maps": maps});
         let mut library = MapLibrary::read_with_roots(PathBuf::new(), []);
         library
             .add_practice_catalog(&serde_json::to_vec(&manifest).unwrap())
+            .unwrap();
+        let mut supplement = manifest;
+        supplement["maps"][1]["name"] = "Replacement".into();
+        library
+            .add_practice_catalog(&serde_json::to_vec(&supplement).unwrap())
             .unwrap();
 
         let practice = library
@@ -174,6 +180,7 @@ mod local_map_tests {
             .collect::<Vec<_>>();
         assert_eq!(practice.len(), 1);
         assert_eq!(practice[0].id, "practice:bhop_practice_catalog_fixture");
+        assert_eq!(practice[0].name, "bhop_practice_catalog_fixture");
         assert_eq!(practice[0].mode, MapMode::Bhop);
         assert_eq!(practice[0].tier, Some(2));
         assert!(catalog::find("bhop_practice_catalog_fixture").is_none());
@@ -190,6 +197,19 @@ mod local_map_tests {
             );
         }
         assert!(library.catalog_source("surf_kitsune").is_some());
+    }
+
+    #[test]
+    fn bundled_practice_catalog_has_pinned_bhop_courses() {
+        let maps = catalog::parse_source_catalog(BUNDLED_PRACTICE_CATALOG)
+            .unwrap()
+            .maps;
+        assert!(maps.len() >= 237);
+        for (id, tier) in [("bhop_flartstrafe_simpsons", 1), ("bhop_qportal", 4)] {
+            let map = maps.iter().find(|map| map.id == id).unwrap();
+            assert_eq!(map.mode, MapMode::Bhop);
+            assert_eq!(map.tier, Some(tier));
+        }
     }
 
     #[test]
@@ -380,6 +400,9 @@ impl MapLibrary {
             roots.extend(std::env::split_paths(&configured));
         }
         let mut library = Self::read_with_roots(directory, roots);
+        if let Err(error) = library.add_practice_catalog(BUNDLED_PRACTICE_CATALOG) {
+            warn!("Could not open bundled practice map catalog: {error}");
+        }
         if let Some(path) = practice_catalog
             && let Err(error) =
                 catalog::read_catalog(&path).and_then(|bytes| library.add_practice_catalog(&bytes))
@@ -394,15 +417,23 @@ impl MapLibrary {
 
     fn add_practice_catalog(&mut self, bytes: &[u8]) -> Result<(), String> {
         let practice = catalog::parse_source_catalog(bytes)?;
+        let already_listed: std::collections::HashSet<_> = self
+            .entries
+            .iter()
+            .filter_map(|entry| entry.id.strip_prefix("practice:").map(str::to_owned))
+            .collect();
         self.entries.extend(
             practice
                 .maps
                 .into_iter()
-                .filter(|map| catalog::find(&map.id).is_none())
+                .filter(|map| catalog::find(&map.id).is_none() && !already_listed.contains(&map.id))
                 .map(|map| MapEntry {
                     id: format!("practice:{}", map.id),
                     name: map.name.clone(),
-                    detail: format!("{} · {} · Practice movement", map.author, map.layout),
+                    detail: format!(
+                        "{} · {} · Surfd movement (66.67 tick)",
+                        map.author, map.layout
+                    ),
                     mode: map.mode,
                     tier: map.tier,
                     source: MapSource::PracticeBsp(Arc::new(map)),
