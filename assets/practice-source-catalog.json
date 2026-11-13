@@ -6454,6 +6454,29 @@
       "minSourceRules": 4
     },
     {
+      "id": "surf_forbidden_ways_ksf_csgo",
+      "slug": "surf_forbidden_ways_ksf_csgo",
+      "name": "Forbidden Ways (CS:GO)",
+      "author": "Krusty",
+      "mode": "surf",
+      "tier": 1,
+      "type": "linear",
+      "bonuses": 1,
+      "minSourceRules": 8,
+      "sourceBsp": {
+        "bspSha256": "da0d410caecf4bade08c1a7c84057c01387221525389555eef67b31f5de435b9",
+        "timerSha256": "c3328a4e80b96b240e8eec36c635390a435386b733dad6fe4d5fd5690a8cc712"
+      },
+      "download": {
+        "bspUrl": "https://cdn.steamusercontent.com/ugc/275094074036212737/986199D85EBCF850307BBA756B15301164D29B62/",
+        "timerUrl": "https://raw.githubusercontent.com/davad00/surfd-rust/7f211785fa96be1c44fe7dad104480a0b977ad30/assets/community-timers/surf_forbidden_ways_ksf_csgo.surf.json",
+        "compression": "zip",
+        "stages": 0,
+        "checkpoints": 6,
+        "archiveMember": "surf_forbidden_ways_ksf.bsp"
+      }
+    },
+    {
       "id": "surf_glass7_ksf",
       "slug": "surf_glass7_ksf",
       "name": "Glass7",

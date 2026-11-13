@@ -1185,6 +1185,113 @@ mod tests {
     use crate::course::ZoneKind;
 
     #[test]
+    fn imported_push_speed_override_requires_the_exact_enabled_trigger() {
+        use sha2::{Digest, Sha256};
+
+        let directory = std::env::temp_dir().join(format!("surfd-push-pin-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("surf_push_fixture.bsp");
+        let bsp_with_entities = |extra| {
+            let mut bsp = fixture();
+            let entities = format!(
+                r#"
+                {{ "classname" "worldspawn" }}
+                {{ "classname" "info_player_counterterrorist" "origin" "15 25 35" }}
+                {{ "classname" "trigger_push" "model" "*1" "hammerid" "2808"
+                   "spawnflags" "1" "pushdir" "0 90 0" "speed" "800" {extra} }}
+                "#,
+            );
+            add_lump(&mut bsp, ENTITIES, 0, entities.as_bytes());
+            bsp
+        };
+        let base = bsp_with_entities("");
+        let mut doc = serde_json::json!({
+            "version": 1,
+            "bsp_sha256": format!("{:x}", Sha256::digest(&base)),
+            "mode": "surf",
+            "timer": "shavit",
+            "tracks": [{
+                "id": 0,
+                "checkpoints_required": false,
+                "checkpoints_ordered": true,
+                "bhop_enabled": false,
+                "limit_start_ground_speed": false
+            }],
+            "zones": [
+                {"kind":"start", "points":[[10,20],[20,20],[20,30],[10,30]], "bottom":30,"height":20},
+                {"kind":"end", "points":[[100,100],[200,100],[200,200],[100,200]], "bottom":30,"height":20}
+            ]
+        });
+        let timer_path = sidecar_path(&path, "surf.json");
+        let install_timer = |doc: &serde_json::Value| {
+            let bytes = serde_json::to_vec(doc).unwrap();
+            std::fs::write(&timer_path, &bytes).unwrap();
+            format!("{:x}", Sha256::digest(&bytes))
+        };
+        std::fs::write(&path, &base).unwrap();
+        install_timer(&doc);
+        let push = |course: Course| {
+            course
+                .zones
+                .into_iter()
+                .find_map(|zone| match zone.kind {
+                    ZoneKind::Push { velocity, .. } => {
+                        Some((zone.brush.min, zone.brush.max, velocity))
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let (min, max, baseline) = push(load_file(&path, None, false, false).unwrap());
+        assert!(baseline.abs_diff_eq(Vec3::NEG_Z * 800.0, 0.001));
+
+        let mut entry = crate::catalog::find("bhop_easy").unwrap().clone();
+        entry.id = "surf_push_fixture".into();
+        entry.mode = crate::catalog::MapMode::Surf;
+        entry.download = None;
+        entry.min_source_rules = 7;
+        entry.source_bsp.as_mut().unwrap().bsp_sha256 = doc["bsp_sha256"].as_str().unwrap().into();
+        let key = "source_push_speed_overrides";
+        let change = serde_json::json!({"hammerid":2808,"from_speed":800,"to_speed":4000});
+        doc[key] = serde_json::json!([change]);
+        entry.source_bsp.as_mut().unwrap().timer_sha256 = install_timer(&doc);
+        assert!(load_ranked_collision(&path, &entry).is_err());
+
+        entry.min_source_rules = 8;
+        let (new_min, new_max, patched) = push(load_ranked_collision(&path, &entry).unwrap());
+        assert_eq!((new_min, new_max), (min, max));
+        assert!(patched.abs_diff_eq(Vec3::NEG_Z * 4000.0, 0.001));
+
+        for invalid in [
+            serde_json::json!([change, change]),
+            serde_json::json!([{"hammerid":99,"from_speed":800,"to_speed":4000}]),
+            serde_json::json!([{"hammerid":2808,"from_speed":801,"to_speed":4000}]),
+            serde_json::json!([{"hammerid":2808,"from_speed":800,"to_speed":0}]),
+        ] {
+            doc[key] = invalid;
+            entry.source_bsp.as_mut().unwrap().timer_sha256 = install_timer(&doc);
+            assert!(load_ranked_collision(&path, &entry).is_err());
+        }
+
+        doc[key] = serde_json::json!([change]);
+        for extra in [
+            r#""StartDisabled" "1""#,
+            r#""spawnflags" "129""#,
+            r#""parentname" "moving_ramp""#,
+            r#""alternateticksfix" "1""#,
+        ] {
+            let altered = bsp_with_entities(extra);
+            std::fs::write(&path, &altered).unwrap();
+            doc["bsp_sha256"] = serde_json::json!(format!("{:x}", Sha256::digest(&altered)));
+            entry.source_bsp.as_mut().unwrap().bsp_sha256 =
+                doc["bsp_sha256"].as_str().unwrap().into();
+            entry.source_bsp.as_mut().unwrap().timer_sha256 = install_timer(&doc);
+            assert!(load_ranked_collision(&path, &entry).is_err());
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn source_settings_require_the_pinned_timer_and_supported_rules() {
         use crate::{
             catalog::{
