@@ -6378,6 +6378,182 @@
       }
     },
     {
+      "id": "surf_brutalist",
+      "slug": "surf_brutalist",
+      "name": "Brutalist",
+      "author": "Hardex",
+      "mode": "surf",
+      "tier": 5,
+      "type": "staged",
+      "bonuses": 1,
+      "sourceBsp": {
+        "bspSha256": "a0b3572f8545678f9eea8aea89ab9627dfb17603e93089ac57ddb87de70ef867",
+        "timerSha256": "6ad9bd6320e0284a7252e8db27fd85a55e37c7401d528c0c7a2e990a5d92092f"
+      },
+      "download": {
+        "bspUrl": "https://main.fastdl.me/maps/ba709fe9f2df83ee8e00f78e46aaf7f912343aa5.bsp.bz2",
+        "timerUrl": "https://raw.githubusercontent.com/davad00/surfd-rust/d7e26208e76b05126e4dc3de5d3f7da31b4dfa3d/assets/community-timers/surf_brutalist.surf.json",
+        "compression": "bzip2",
+        "stages": 4,
+        "checkpoints": 3
+      },
+      "minSourceRules": 4
+    },
+    {
+      "id": "surf_chasm",
+      "slug": "surf_chasm",
+      "name": "Chasm",
+      "author": "sid",
+      "mode": "surf",
+      "tier": 4,
+      "type": "linear",
+      "bonuses": 4,
+      "sourceBsp": {
+        "bspSha256": "115e9595faefc265b0fc755b7ebc0ebe9e3740bcdd2e814f5fd90839d9e2c883",
+        "timerSha256": "4a0843438b68ebadf7fd2a6540b5944ede95e21d5677d4adbbd34005bba7b9c9"
+      },
+      "download": {
+        "bspUrl": "https://main.fastdl.me/maps/e4a0b0414b51007a43d59ab808fa204afdbbb65a.bsp.bz2",
+        "timerUrl": "https://raw.githubusercontent.com/davad00/surfd-rust/d7e26208e76b05126e4dc3de5d3f7da31b4dfa3d/assets/community-timers/surf_chasm.surf.json",
+        "compression": "bzip2",
+        "stages": 0,
+        "checkpoints": 4
+      },
+      "minSourceRules": 4
+    },
+    {
+      "id": "surf_delight",
+      "slug": "surf_delight",
+      "name": "Delight",
+      "author": "aqresiv3",
+      "mode": "surf",
+      "tier": 2,
+      "type": "linear",
+      "bonuses": 3,
+      "sourceBsp": {
+        "bspSha256": "3866751507168ee1ccdff2a729ade68b4405c3b72eeda22a99c577abc2ed85e8",
+        "timerSha256": "3ea2b340aff37a3e63e8928630e3065a173ac95e5b669a23e065bb359d480fa2"
+      },
+      "download": {
+        "bspUrl": "https://main.fastdl.me/maps/b2e7cd31987b2f6c6a391dadb50ccba6a1e5fe17.bsp.bz2",
+        "timerUrl": "https://raw.githubusercontent.com/davad00/surfd-rust/d7e26208e76b05126e4dc3de5d3f7da31b4dfa3d/assets/community-timers/surf_delight.surf.json",
+        "compression": "bzip2",
+        "stages": 0,
+        "checkpoints": 3
+      },
+      "minSourceRules": 4
+    },
+    {
+      "id": "surf_enlightened_ksf",
+      "slug": "surf_enlightened_ksf",
+      "name": "Enlightened Ksf",
+      "author": "Benchmarked",
+      "mode": "surf",
+      "tier": 1,
+      "type": "linear",
+      "bonuses": 3,
+      "sourceBsp": {
+        "bspSha256": "fad70fc38767a20c0416d810abea658344431ad24331ec292d09600cdef07166",
+        "timerSha256": "a647984eabe1031076b3494901760589bf349726dd47bfd94b25a8db17c88bb9"
+      },
+      "download": {
+        "bspUrl": "https://main.fastdl.me/maps/4a7d4d11889711f694e8d966b4da9a1bd563c345.bsp.bz2",
+        "timerUrl": "https://raw.githubusercontent.com/davad00/surfd-rust/d7e26208e76b05126e4dc3de5d3f7da31b4dfa3d/assets/community-timers/surf_enlightened_ksf.surf.json",
+        "compression": "bzip2",
+        "stages": 0,
+        "checkpoints": 2
+      },
+      "minSourceRules": 4
+    },
+    {
+      "id": "surf_glass7_ksf",
+      "slug": "surf_glass7_ksf",
+      "name": "Glass7",
+      "author": "Smileytopin",
+      "mode": "surf",
+      "tier": 2,
+      "type": "linear",
+      "bonuses": 0,
+      "sourceBsp": {
+        "bspSha256": "6b17f396fbe6b6e54c024420031c20d64b479f2bfa6cb4a963afe6739e7446e1",
+        "timerSha256": "5581b3b657667d3c4051ff22ea3612712702b979722b38a7477499c594142087"
+      },
+      "download": {
+        "bspUrl": "https://main.fastdl.me/maps/c35a14c3f26f607da21eeda090045ab2283dd6e6.bsp.bz2",
+        "timerUrl": "https://raw.githubusercontent.com/davad00/surfd-rust/d7e26208e76b05126e4dc3de5d3f7da31b4dfa3d/assets/community-timers/surf_glass7_ksf.surf.json",
+        "compression": "bzip2",
+        "stages": 0,
+        "checkpoints": 3
+      },
+      "minSourceRules": 4
+    },
+    {
+      "id": "surf_lament_ksf",
+      "slug": "surf_lament_ksf",
+      "name": "Lament Ksf",
+      "author": "nappa",
+      "mode": "surf",
+      "tier": 1,
+      "type": "linear",
+      "bonuses": 1,
+      "sourceBsp": {
+        "bspSha256": "c23d1be5fad7c159feaa22fe70e5c13635fe09929fc356ce915c3bad74345790",
+        "timerSha256": "b157eed308ec32c5c9c0d8d9fb2dda29bb041e074d2dbd1a60a10b770fac8e36"
+      },
+      "download": {
+        "bspUrl": "https://main.fastdl.me/maps/d5a74fb85f74ac83183dba85f87f9377005bcd66.bsp.bz2",
+        "timerUrl": "https://raw.githubusercontent.com/davad00/surfd-rust/d7e26208e76b05126e4dc3de5d3f7da31b4dfa3d/assets/community-timers/surf_lament_ksf.surf.json",
+        "compression": "bzip2",
+        "stages": 0,
+        "checkpoints": 3
+      },
+      "minSourceRules": 4
+    },
+    {
+      "id": "surf_loentra",
+      "slug": "surf_loentra",
+      "name": "Loentra",
+      "author": "ins",
+      "mode": "surf",
+      "tier": 5,
+      "type": "linear",
+      "bonuses": 2,
+      "sourceBsp": {
+        "bspSha256": "5543d55e6344ca0574458811126cd1f82ff548d38d2ba41d0d4847e0cdc12433",
+        "timerSha256": "55c96f23ac3c4b470255bea1824e5c690b77a37c35a268b4031fa0adfd767916"
+      },
+      "download": {
+        "bspUrl": "https://main.fastdl.me/maps/68d1ad1c66e2587685eebf0fc5b327b35bffb539.bsp.bz2",
+        "timerUrl": "https://raw.githubusercontent.com/davad00/surfd-rust/d7e26208e76b05126e4dc3de5d3f7da31b4dfa3d/assets/community-timers/surf_loentra.surf.json",
+        "compression": "bzip2",
+        "stages": 0,
+        "checkpoints": 3
+      },
+      "minSourceRules": 5
+    },
+    {
+      "id": "surf_rubiks_cube",
+      "slug": "surf_rubiks_cube",
+      "name": "Rubiks Cube",
+      "author": "juve",
+      "mode": "surf",
+      "tier": 4,
+      "type": "staged",
+      "bonuses": 2,
+      "sourceBsp": {
+        "bspSha256": "0f27a170fc2214ef2d22062254417122a5e6ea9eb5564a02a3620b56a67e02f4",
+        "timerSha256": "3cab050f045a6d9dc0844c7ef37f7a778a0b80f83a7a7c89e4b90ba5f248cfd9"
+      },
+      "download": {
+        "bspUrl": "https://main.fastdl.me/maps/9f50423319f1f8f7dd4559b9cb58fb84b6b58f57.bsp.bz2",
+        "timerUrl": "https://raw.githubusercontent.com/davad00/surfd-rust/d7e26208e76b05126e4dc3de5d3f7da31b4dfa3d/assets/community-timers/surf_rubiks_cube.surf.json",
+        "compression": "bzip2",
+        "stages": 5,
+        "checkpoints": 4
+      },
+      "minSourceRules": 4
+    },
+    {
       "id": "surf_simpsons_source",
       "slug": "surf_simpsons_source",
       "name": "Simpsons Source",
@@ -6398,6 +6574,28 @@
         "stages": 10,
         "checkpoints": 9
       }
+    },
+    {
+      "id": "surf_void",
+      "slug": "surf_void",
+      "name": "Void",
+      "author": "juve",
+      "mode": "surf",
+      "tier": 1,
+      "type": "linear",
+      "bonuses": 0,
+      "sourceBsp": {
+        "bspSha256": "488dbc87f1ae54f76f9a70af75bc2495b86246095c20a4fed4be2b12e81a9406",
+        "timerSha256": "16564c939aad5a99706f188a9fdf56a2338942804296a1cce6aceebd01e57956"
+      },
+      "download": {
+        "bspUrl": "https://main.fastdl.me/maps/76bb855312d9d31cd1b977b5d52c8249260a9e9b.bsp.bz2",
+        "timerUrl": "https://raw.githubusercontent.com/davad00/surfd-rust/d7e26208e76b05126e4dc3de5d3f7da31b4dfa3d/assets/community-timers/surf_void.surf.json",
+        "compression": "bzip2",
+        "stages": 0,
+        "checkpoints": 2
+      },
+      "minSourceRules": 5
     }
   ]
 }
