@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "bsp_sha256": "8acb24552de0664245fd9d116271bace7e55cc5764b89bee38b054ee977a4518",
+  "timer": "shavit",
+  "mode": "surf",
+  "tier": 2,
+  "max_velocity": 3500,
+  "source_movement": {
+    "ground_acceleration": 10,
+    "ground_friction": 5.2
+  },
+  "tracks": [
+    {
+      "id": 0,
+      "checkpoints_required": true,
+      "checkpoints_ordered": true,
+      "bhop_enabled": true,
+      "limit_start_ground_speed": true,
+      "start_speed_cap": 260
+    }
+  ],
+  "zones": [
+    {
+      "kind": "end",
+      "track": 0,
+      "points": [
+        [
+          5376.11,
+          3776.06
+        ],
+        [
+          7647.08,
+          3776.06
+        ],
+        [
+          7647.08,
+          4223.97
+        ],
+        [
+          5376.11,
+          4223.97
+        ]
+      ],
+      "bottom": 2912.03,
+      "height": 672.4099999999999
+    },
+    {
+      "kind": "start",
+      "track": 0,
+      "points": [
+        [
+          -9559.18,
+          5416.03
+        ],
+        [
+          -8936.03,
+          5416.03
+        ],
+        [
+          -8936.03,
+          5919.83
+        ],
+        [
+          -9559.18,
+          5919.83
+        ]
+      ],
+      "bottom": 3530.18,
+      "height": 174.30999999999995
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 2,
+      "points": [
+        [
+          -10128.2,
+          480.031
+        ],
+        [
+          -10078.1,
+          480.031
+        ],
+        [
+          -10078.1,
+          3999.97
+        ],
+        [
+          -10128.2,
+          3999.97
+        ]
+      ],
+      "bottom": 2624.2,
+      "height": 1021.6600000000003
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 1,
+      "points": [
+        [
+          -12576,
+          7138.43
+        ],
+        [
+          -11521.2,
+          7138.43
+        ],
+        [
+          -11521.2,
+          7160.91
+        ],
+        [
+          -12576,
+          7160.91
+        ]
+      ],
+      "bottom": 2051.46,
+      "height": 1276.5099999999998
+    }
+  ],
+  "entity_output_fixes": [],
+  "source_prestart_target": "failman"
+}
