@@ -792,15 +792,26 @@ impl Geometry {
                 .and_then(|material| material.name.as_deref())
                 .and_then(|name| materials.resolve(name));
             let texture = material.and_then(|material| {
-                if material.size.iter().any(|&dimension| dimension <= 0.0) {
-                    return None;
-                }
                 let texture = resolved?;
+                let [mut width, mut height] = material.size;
+                if width <= 0.0 || height <= 0.0 {
+                    if width < 0.0 || height < 0.0 {
+                        return None;
+                    }
+                    // Texture axes are in texels. Use the original image size
+                    // when the BSP omitted either dimension.
+                    let [image_width, image_height] = materials.texture_dimensions(texture);
+                    if width == 0.0 {
+                        width = image_width;
+                    }
+                    if height == 0.0 {
+                        height = image_height;
+                    }
+                }
                 let uvs: Vec<_> = vertices
                     .iter()
                     .map(|&vertex| {
                         let [(s, s_offset), (t, t_offset)] = info.axes;
-                        let [width, height] = material.size;
                         texture.uv([
                             (vertex.dot(s) + s_offset) / width,
                             (vertex.dot(t) + t_offset) / height,
@@ -1468,6 +1479,69 @@ mod tests {
         assert!(collision.textures.is_empty());
         assert!(collision.surfaces.is_empty());
         assert!(collision.sky.is_none());
+    }
+
+    #[test]
+    fn mounted_vtf_supplies_missing_source_texture_dimensions() {
+        use std::fs;
+
+        let directory =
+            std::env::temp_dir().join(format!("surfd-texture-size-{}", std::process::id()));
+        let map = directory.join("fixture.bsp");
+        let material = directory.join("materials/surfd_test_missing_texture_dimensions.vtf");
+        fs::create_dir_all(material.parent().unwrap()).unwrap();
+
+        let mut bytes = fixture();
+        let mut axes = [0; 72];
+        put(&mut axes, 0, 1.0_f32.to_le_bytes());
+        put(&mut axes, 20, 1.0_f32.to_le_bytes());
+        add_lump(&mut bytes, TEXINFO, 0, &axes);
+        add_lump(&mut bytes, TEXDATA, 0, &[0; 32]);
+        add_lump(&mut bytes, TEXDATA_STRING_TABLE, 0, &[0; 4]);
+        add_lump(
+            &mut bytes,
+            TEXDATA_STRING_DATA,
+            0,
+            b"surfd_test_missing_texture_dimensions\0",
+        );
+
+        let missing = parse(&bytes, "fixture", Some(&map), None, true, false, 0).unwrap();
+        assert!(missing.textures[0].name.starts_with("surfd-fallback/"));
+
+        // VTF 7.2, 4 by 8, one RGBA8888 image and no thumbnail.
+        let mut vtf = vec![0; 80 + 4 * 8 * 4];
+        put(&mut vtf, 0, *b"VTF\0");
+        put(&mut vtf, 4, 7_u32.to_le_bytes());
+        put(&mut vtf, 8, 2_u32.to_le_bytes());
+        put(&mut vtf, 12, 80_u32.to_le_bytes());
+        put(&mut vtf, 16, 4_u16.to_le_bytes());
+        put(&mut vtf, 18, 8_u16.to_le_bytes());
+        put(&mut vtf, 24, 1_u16.to_le_bytes());
+        vtf[56] = 1;
+        put(&mut vtf, 57, (-1_i32).to_le_bytes());
+        put(&mut vtf, 63, 1_u16.to_le_bytes());
+        fs::write(&material, vtf).unwrap();
+
+        let loaded = parse(&bytes, "fixture", Some(&map), None, true, false, 0).unwrap();
+        let mut partial = [0; 32];
+        put(&mut partial, 16, 16_i32.to_le_bytes());
+        add_lump(&mut bytes, TEXDATA, 0, &partial);
+        let mixed = parse(&bytes, "fixture", Some(&map), None, true, false, 0).unwrap();
+        fs::remove_file(&material).unwrap();
+        fs::remove_dir(material.parent().unwrap()).unwrap();
+        fs::remove_dir(&directory).unwrap();
+
+        for (course, width) in [(loaded, 4.0), (mixed, 16.0)] {
+            let surface = &course.surfaces[0];
+            let texture = surface.texture.as_ref().unwrap();
+            assert_eq!(
+                course.textures[texture.index].name,
+                "materials/surfd_test_missing_texture_dimensions.vtf"
+            );
+            for (vertex, uv) in surface.vertices.iter().zip(&texture.uvs) {
+                assert_eq!(*uv, [vertex.x / width, -vertex.z / 8.0]);
+            }
+        }
     }
 
     #[test]

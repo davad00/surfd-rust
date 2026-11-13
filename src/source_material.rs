@@ -210,6 +210,11 @@ impl<'a> Materials<'a> {
         self.textures
     }
 
+    pub fn texture_dimensions(&self, resolved: Resolved) -> [f32; 2] {
+        let texture = &self.textures[resolved.index];
+        [texture.width as f32, texture.height as f32]
+    }
+
     pub fn fill_surface(&mut self, surface: &mut Surface, translucent: bool) {
         map_materials::fill_surface(
             surface,
