@@ -1,0 +1,179 @@
+{
+  "version": 1,
+  "bsp_sha256": "43c62238234f79e91eeb4a9431ae3f17500e77ce58f3ed3fac19cadab0ed76b9",
+  "timer": "shavit",
+  "mode": "surf",
+  "tier": 1,
+  "max_velocity": 3500,
+  "source_movement": {
+    "ground_acceleration": 10,
+    "ground_friction": 5.2
+  },
+  "tracks": [
+    {
+      "id": 0,
+      "checkpoints_required": true,
+      "checkpoints_ordered": true,
+      "bhop_enabled": true,
+      "limit_start_ground_speed": true,
+      "start_speed_cap": 260
+    }
+  ],
+  "zones": [
+    {
+      "kind": "stage",
+      "track": 0,
+      "index": 3,
+      "target": "stage 3 beginning",
+      "points": [
+        [
+          5392.88,
+          5492.1
+        ],
+        [
+          5895.81,
+          5492.1
+        ],
+        [
+          5895.81,
+          5892.28
+        ],
+        [
+          5392.88,
+          5892.28
+        ]
+      ],
+      "bottom": 224.031,
+      "height": 114.98199999999997
+    },
+    {
+      "kind": "start",
+      "track": 0,
+      "points": [
+        [
+          12429,
+          720.916
+        ],
+        [
+          14114.9,
+          720.916
+        ],
+        [
+          14114.9,
+          1367.9
+        ],
+        [
+          12429,
+          1367.9
+        ]
+      ],
+      "bottom": 2303.31,
+      "height": 96.11000000000013
+    },
+    {
+      "kind": "end",
+      "track": 0,
+      "points": [
+        [
+          -2444.83,
+          4640.14
+        ],
+        [
+          -1856.17,
+          4640.14
+        ],
+        [
+          -1856.17,
+          7255.53
+        ],
+        [
+          -2444.83,
+          7255.53
+        ]
+      ],
+      "bottom": -6535.97,
+      "height": 543.9400000000005
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "index": 2,
+      "target": "stage 2 beginning",
+      "points": [
+        [
+          8580.24,
+          9589.27
+        ],
+        [
+          11596,
+          9589.27
+        ],
+        [
+          11596,
+          10076.9
+        ],
+        [
+          8580.24,
+          10076.9
+        ]
+      ],
+      "bottom": 2596.03,
+      "height": 99.48999999999978
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "index": 4,
+      "target": "stage 4 beginning",
+      "points": [
+        [
+          3425.12,
+          7152.33
+        ],
+        [
+          4658.61,
+          7152.33
+        ],
+        [
+          4658.61,
+          7443.36
+        ],
+        [
+          3425.12,
+          7443.36
+        ]
+      ],
+      "bottom": -673.639,
+      "height": 66.77200000000005
+    },
+    {
+      "kind": "stage",
+      "track": 0,
+      "index": 5,
+      "target": "stage 5 beginning",
+      "points": [
+        [
+          -1013.22,
+          11015.4
+        ],
+        [
+          -5.45583,
+          11015.4
+        ],
+        [
+          -5.45583,
+          11267.6
+        ],
+        [
+          -1013.22,
+          11267.6
+        ]
+      ],
+      "bottom": 430.031,
+      "height": 99.99999999999994
+    }
+  ],
+  "entity_output_fixes": [],
+  "source_stage_drop_spawns": true,
+  "source_prestart_target": "stage 1 beginnning"
+}

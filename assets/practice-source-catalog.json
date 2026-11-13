@@ -6366,6 +6366,29 @@
       }
     },
     {
+      "id": "surf_aweles",
+      "slug": "surf_aweles",
+      "name": "Aweles (CS:GO)",
+      "author": "Mazzo",
+      "mode": "surf",
+      "tier": 1,
+      "type": "staged",
+      "bonuses": 0,
+      "sourceBsp": {
+        "bspSha256": "43c62238234f79e91eeb4a9431ae3f17500e77ce58f3ed3fac19cadab0ed76b9",
+        "timerSha256": "54bcb476f1036c8a4b8ccb284ac8ff73ab00a9309f8b87c0a59e043354c0d240"
+      },
+      "download": {
+        "bspUrl": "https://cdn.steamusercontent.com/ugc/683776078263108059/B82D86848FCDECDA3F7BB87DCEC5AAD130C7922F/",
+        "timerUrl": "https://raw.githubusercontent.com/davad00/surfd-rust/2280de42e011c304667f64472c59b8cb75c423a2/assets/community-timers/surf_aweles.surf.json",
+        "compression": "zip",
+        "stages": 5,
+        "checkpoints": 4,
+        "archiveMember": "surf_aweles.bsp"
+      },
+      "minSourceRules": 8
+    },
+    {
       "id": "surf_brutalist",
       "slug": "surf_brutalist",
       "name": "Brutalist",

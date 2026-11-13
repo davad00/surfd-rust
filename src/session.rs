@@ -19,6 +19,8 @@ use crate::{
     rules::{MovementRules, PhysicsProfile, TickInterval},
 };
 
+const SOURCE_STAGE_DROP_WINDOW_MS: u16 = 1000;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunPhase {
     Untimed,
@@ -118,6 +120,7 @@ struct TriggerState {
     jump_disabled: bool,
     pending_outputs: Vec<(u64, i32, PlayerOutputValue)>,
     stage_start_recovery: bool,
+    stage_start_drop_until_tick: u64,
     teleport_movement_lock: bool,
     imported_start_armed: bool,
     css_bhop_start: CssBhopStart,
@@ -630,6 +633,36 @@ impl Session {
         u16::try_from(index + 1).ok()
     }
 
+    fn source_stage_drop_ticks(&self) -> u64 {
+        u64::from(SOURCE_STAGE_DROP_WINDOW_MS.div_ceil(u16::from(self.tick_interval().millis())))
+    }
+
+    pub(crate) fn settles_in_source_stage(&mut self, course: &Course, stage: u16) -> bool {
+        let spawn = &course.map_triggers.authored_stage_spawns[usize::from(stage - 1)];
+        let input = MoveInput {
+            yaw: spawn.yaw,
+            ..Default::default()
+        };
+        let revision = self.pose_revision();
+        for _ in 0..self.source_stage_drop_ticks() {
+            self.tick_with_view(course, input, spawn.pitch);
+            if self.pose_revision() != revision {
+                return false;
+            }
+            if self.player.grounded {
+                let kind = if stage == 1 {
+                    ZoneKind::Start
+                } else {
+                    ZoneKind::StageStart(stage)
+                };
+                let hull =
+                    TriggerHull::for_player(&self.player, self.uses_precise_triggers(course));
+                return start_brush(&course.zones, &kind, self.player.position, hull).is_some();
+            }
+        }
+        false
+    }
+
     /// Consume one simulation tick to return to the current authored stage start.
     /// The running clock and completed checkpoint splits remain active.
     pub fn restart_stage(&mut self, course: &Course) -> Result<(f32, f32), &'static str> {
@@ -648,10 +681,22 @@ impl Session {
             .authored_stage_spawns
             .get(usize::from(stage - 1))
             .ok_or("This course has no current stage start")?;
+        let tick = self.triggers.tick + 1;
         self.triggers = TriggerState {
-            tick: self.triggers.tick + 1,
+            tick,
             stage,
             stage_start_recovery: stage == 1,
+            stage_start_drop_until_tick: if stage == 1
+                && course
+                    .map_triggers
+                    .source_timer
+                    .as_ref()
+                    .is_some_and(|timer| timer.stage_one_drop_restart)
+            {
+                tick + self.source_stage_drop_ticks()
+            } else {
+                0
+            },
             ..TriggerState::default()
         };
         self.player = Player::at_stage_restart(spawn.position, self.rules);
@@ -1278,8 +1323,12 @@ impl Session {
         if self.phase == RunPhase::Running {
             self.elapsed = self.time_at(1.0, running_from);
         }
-        if self.triggers.stage_start_recovery && !inside_start {
-            self.triggers.stage_start_recovery = false;
+        if self.triggers.stage_start_recovery {
+            if inside_start {
+                self.triggers.stage_start_drop_until_tick = 0;
+            } else if self.triggers.tick >= self.triggers.stage_start_drop_until_tick {
+                self.triggers.stage_start_recovery = false;
+            }
         }
         self.observe_stage_clock(course, movement.segments.as_slice(), segment_end);
         if self.phase == RunPhase::Running || finished {
