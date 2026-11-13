@@ -98,6 +98,11 @@ const SCHEMA: &str = "
         account INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
         PRIMARY KEY(replay_sha256, account)
     ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS ranked_trajectory_owners (
+        trajectory_sha256 BLOB NOT NULL,
+        account INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        PRIMARY KEY(trajectory_sha256, account)
+    ) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS ranked_save_reservations (
         id TEXT PRIMARY KEY,
         attempt BLOB NOT NULL UNIQUE,
@@ -1206,7 +1211,7 @@ impl Service {
             (owner, ticket)
         };
         let course = self.course(map)?;
-        let verified = replay::verify_ranked(&course, &replay)
+        let (verified, trajectory) = replay::verify_ranked_with_trajectory(&course, &replay)
             .map_err(|error| ApiError::new(422, format!("Replay did not verify: {error}")))?;
         let revision = course
             .board_revision(replay.bonus)
@@ -1225,7 +1230,13 @@ impl Service {
             return Ok(saved);
         }
         let distinct_replay = replay.has_distinct_aim_pattern();
-        if distinct_replay && copied_ranked_replay(&transaction, owner, &fingerprint)? {
+        let copied_trajectory = match &trajectory {
+            Some(digest) => copied_ranked_trajectory(&transaction, owner, digest)?,
+            None => false,
+        };
+        if copied_trajectory
+            || (distinct_replay && copied_ranked_replay(&transaction, owner, &fingerprint)?)
+        {
             return Err(ApiError::new(
                 409,
                 "This replay was already published by another account.",
@@ -1265,8 +1276,16 @@ impl Service {
                 stages: &verified.stages,
             },
         )?;
-        if distinct_replay && (changed == 1 || stage_improved) {
-            remember_ranked_replay(&transaction, owner, &fingerprint)?;
+        if changed == 1 || stage_improved {
+            if distinct_replay {
+                remember_ranked_replay(&transaction, owner, &fingerprint)?;
+            }
+            if let Some(digest) = &trajectory {
+                transaction.execute(
+                    "INSERT OR IGNORE INTO ranked_trajectory_owners(trajectory_sha256,account) VALUES (?1,?2)",
+                    params![digest.as_slice(), owner],
+                )?;
+            }
         }
         let mode = catalog::find(map).map_or(MapMode::Surf, |entry| entry.mode);
         let progression = (changed == 1)
@@ -1585,6 +1604,19 @@ fn copied_ranked_replay(db: &Connection, owner: i64, fingerprint: &str) -> rusql
         "SELECT EXISTS(SELECT 1 FROM ranked_replay_owners WHERE replay_sha256=?1)
           AND NOT EXISTS(SELECT 1 FROM ranked_replay_owners WHERE replay_sha256=?1 AND account=?2)",
         params![fingerprint, owner],
+        |row| row.get(0),
+    )
+}
+
+fn copied_ranked_trajectory(
+    db: &Connection,
+    owner: i64,
+    fingerprint: &[u8; 32],
+) -> rusqlite::Result<bool> {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM ranked_trajectory_owners WHERE trajectory_sha256=?1)
+          AND NOT EXISTS(SELECT 1 FROM ranked_trajectory_owners WHERE trajectory_sha256=?1 AND account=?2)",
+        params![fingerprint.as_slice(), owner],
         |row| row.get(0),
     )
 }
@@ -2860,6 +2892,54 @@ mod tests {
         assert_eq!(save(&other).err().unwrap().status, 409);
         assert!(!save(&original).unwrap().personal_best);
         assert_eq!(service.board("downline", None).unwrap().rows.len(), 1);
+    }
+
+    #[test]
+    fn copied_ranked_trajectory_rejects_a_harmless_view_change() {
+        let service = service();
+        let [original, other] = {
+            let db = service.db.lock().unwrap();
+            db.execute_batch(
+                "INSERT INTO accounts(id,name,password) VALUES (1,'Original',''),(2,'Other','');",
+            )
+            .unwrap();
+            [1, 2].map(|owner| create_session(&db, owner).unwrap().token)
+        };
+        let replay = finished_downline_with_aim(true);
+        let mut altered = replay.clone();
+        altered.commands[0].pitch += 0.001;
+        let course = service.course("Downline").unwrap();
+        assert_ne!(replay, altered);
+        assert_eq!(
+            replay::verify_ranked(&course, &replay).unwrap(),
+            replay::verify_ranked(&course, &altered).unwrap()
+        );
+        let save = |auth: &str, replay: replay::RunReplay| {
+            let attempt = service
+                .issue(
+                    Some(auth),
+                    AttemptRequest {
+                        map: replay.map.clone(),
+                        bonus: replay.bonus,
+                    },
+                )
+                .unwrap();
+            service.submit(
+                Some(auth),
+                SubmitRun {
+                    attempt: attempt.token,
+                    replay,
+                },
+            )
+        };
+        assert!(save(&original, replay).unwrap().personal_best);
+        assert!(!save(&original, altered.clone()).unwrap().personal_best);
+        let rejection = save(&other, altered).err().unwrap();
+        assert_eq!(rejection.status, 409);
+        assert_eq!(
+            rejection.message,
+            "This replay was already published by another account."
+        );
     }
 
     #[test]

@@ -5,6 +5,8 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "records-service")]
+use sha2::{Digest, Sha256};
 
 use crate::{
     course::Course,
@@ -421,6 +423,25 @@ impl NativeGhost {
 }
 
 pub fn verify_ranked(course: &Course, replay: &RunReplay) -> Result<VerifiedRun, ReplayError> {
+    verify_ranked_with_observer(course, replay, |_| {})
+}
+
+#[cfg(feature = "records-service")]
+pub(crate) fn verify_ranked_with_trajectory(
+    course: &Course,
+    replay: &RunReplay,
+) -> Result<(VerifiedRun, Option<[u8; 32]>), ReplayError> {
+    let mut trajectory = RankedTrajectory::new(replay);
+    let run = verify_ranked_with_observer(course, replay, |session| trajectory.observe(session))?;
+    let fingerprint = trajectory.finish(run.time_us);
+    Ok((run, fingerprint))
+}
+
+fn verify_ranked_with_observer(
+    course: &Course,
+    replay: &RunReplay,
+    mut observe: impl FnMut(&Session),
+) -> Result<VerifiedRun, ReplayError> {
     if replay.version != REPLAY_VERSION {
         return Err(ReplayError::Version);
     }
@@ -441,6 +462,7 @@ pub fn verify_ranked(course: &Course, replay: &RunReplay) -> Result<VerifiedRun,
             return Err(ReplayError::Command(index));
         }
         session.tick_command(course, *command);
+        observe(&session);
         if session.phase == RunPhase::Finished && index + 1 != replay.commands.len() {
             return Err(ReplayError::TrailingCommands);
         }
@@ -469,6 +491,90 @@ pub fn verify_ranked(course: &Course, replay: &RunReplay) -> Result<VerifiedRun,
         checkpoint_speeds: session.checkpoint_speeds,
         stages,
     })
+}
+
+#[cfg(feature = "records-service")]
+const DISTINCT_TRAJECTORY_TURNS: usize = 16;
+
+#[cfg(feature = "records-service")]
+struct RankedTrajectory {
+    seed: Sha256,
+    digest: Sha256,
+    turns: [i32; DISTINCT_TRAJECTORY_TURNS],
+    turn_count: usize,
+    heading: Option<f32>,
+    active: bool,
+}
+
+#[cfg(feature = "records-service")]
+impl RankedTrajectory {
+    fn new(replay: &RunReplay) -> Self {
+        let mut seed = Sha256::new();
+        seed.update(b"surfd-ranked-trajectory-v1\0");
+        seed.update((replay.map.len() as u32).to_le_bytes());
+        seed.update(replay.map.as_bytes());
+        seed.update((replay.revision.len() as u32).to_le_bytes());
+        seed.update(replay.revision.as_bytes());
+        seed.update(replay.bonus.unwrap_or(0).to_le_bytes());
+        Self {
+            digest: seed.clone(),
+            seed,
+            turns: [0; DISTINCT_TRAJECTORY_TURNS],
+            turn_count: 0,
+            heading: None,
+            active: false,
+        }
+    }
+
+    fn observe(&mut self, session: &Session) {
+        if !matches!(session.phase, RunPhase::Running | RunPhase::Finished) {
+            if self.active {
+                self.digest = self.seed.clone();
+                self.turn_count = 0;
+                self.heading = None;
+                self.active = false;
+            }
+            return;
+        }
+        self.active = true;
+        let player = &session.player;
+        let position = player.position;
+        let velocity = player.velocity;
+        let mut tick = [0; 25];
+        for (field, value) in tick[..24].chunks_exact_mut(4).zip([
+            position.x, position.y, position.z, velocity.x, velocity.y, velocity.z,
+        ]) {
+            let bits = if value == 0.0 { 0 } else { value.to_bits() };
+            field.copy_from_slice(&bits.to_le_bytes());
+        }
+        tick[24] = u8::from(player.grounded) | (u8::from(player.is_crouched()) << 1);
+        self.digest.update(tick);
+        if self.turn_count == self.turns.len() {
+            return;
+        }
+        // Reproducible straight or stopped runs can legitimately share every state.
+        if velocity.x * velocity.x + velocity.z * velocity.z < 1.0 || session.pose_discontinuity() {
+            self.heading = None;
+            return;
+        }
+        let heading = velocity.z.atan2(velocity.x);
+        if let Some(previous) = self.heading.replace(heading) {
+            let delta = (heading - previous + PI).rem_euclid(TAU) - PI;
+            let turn = (delta * 10_000.0).round() as i32;
+            if turn != 0 && !self.turns[..self.turn_count].contains(&turn) {
+                self.turns[self.turn_count] = turn;
+                self.turn_count += 1;
+            }
+        }
+    }
+
+    fn finish(mut self, time_us: u64) -> Option<[u8; 32]> {
+        if self.turn_count < self.turns.len() {
+            return None;
+        }
+        self.digest.update(time_us.to_le_bytes());
+        Some(self.digest.finalize().into())
+    }
 }
 
 #[cfg(test)]
