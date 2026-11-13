@@ -1,6 +1,6 @@
 # Room server performance
 
-The room server relays movement snapshots at a target of 20 Hz. The desktop runs the movement simulation at 66⅔ ticks per second, and ranked verification replays movement separately.
+The room server relays movement snapshots at a target of 20 Hz. The desktop runs movement at the course's pinned interval. Most courses use 15 ms per tick, and Jaunt 3, 4, and 6 use 10 ms. Ranked verification replays movement separately.
 
 ## Public rooms
 
@@ -142,3 +142,15 @@ A separate two-minute run started with 96 moving, signed-in clients across three
 | 16 | T6–T7 | 9 | 16/16 | 110 ms |
 
 The recovery measurements cover server notifications and movement relays to headless clients. Desktop map loading also depends on cached assets, downloads, and rendering. The test recorded 20.00 Hz room medians, a 53.14 ms worst room p95 snapshot gap, and 98 ms worst room p95 pose age. Sixteen sign-ins and 12 ranked saves succeeded. The machine averaged 13.25% CPU and 67.56 Mb/s outbound, with a minimum of 319 MiB available RAM.
+
+## Source map loading in the records service
+
+The records service skips render-only BSP lumps when it needs collision and timing data. The table reports median process CPU time across three paired warm-cache trials on Windows. The change affects map cache misses. The measurements cover loading and leave the room's steady snapshot budget unmeasured.
+
+| Map workload | Loads per trial | Previous CPU time | Updated CPU time |
+| --- | ---: | ---: | ---: |
+| Two BSPs with internally compressed render lumps | 24 | 7,406 ms | 5,391 ms |
+| Seven mostly uncompressed CS:S BSPs | 56 | 24,219 ms | 23,875 ms |
+| Seven CS:S BSPs, six wrapped in gzip | 28 | 16,125 ms | 16,141 ms |
+
+Collision brushes, triggers, and 900 movement ticks matched across eight tested maps. An isolated ARM records service saved six archived command runs at their expected times, including a Surf course with 18 stage records and all three 100 Hz Jaunts. Boards, profiles, replays, and save receipts persisted across restart. A second account submitting a copied trajectory with a camera-only change was rejected.
