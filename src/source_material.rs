@@ -12,6 +12,7 @@ use vformats::bsp::{ZipEntry, ZipReader};
 use vformats::vpk::{self, VpkLocation};
 use vformats::{Limits, vmt, vtf};
 
+use crate::bc_texture::BcTexture;
 use crate::course::{CourseTexture, Surface, TextureAlpha};
 use crate::map_materials;
 
@@ -28,9 +29,10 @@ pub(crate) struct Materials<'a> {
     archives: Option<Vec<Archive>>,
     limits: Limits,
     resolved: HashMap<String, Option<Resolved>>,
-    decoded: HashMap<(String, Alpha), usize>,
+    by_image: HashMap<(String, Alpha), usize>,
     textures: Vec<CourseTexture>,
     decoded_bytes: usize,
+    use_bc: bool,
     replacements: [Option<usize>; 2],
 }
 
@@ -163,7 +165,7 @@ fn enabled(value: &str) -> bool {
 }
 
 impl<'a> Materials<'a> {
-    pub fn new(pak_bytes: &'a [u8], map_path: Option<&Path>) -> Self {
+    pub fn new(pak_bytes: &'a [u8], map_path: Option<&Path>, use_bc: bool) -> Self {
         let pak = ZipReader::parse(pak_bytes).ok();
         let pak_index = pak
             .as_ref()
@@ -187,9 +189,10 @@ impl<'a> Materials<'a> {
                 ..Limits::default()
             },
             resolved: HashMap::new(),
-            decoded: HashMap::new(),
+            by_image: HashMap::new(),
             textures: Vec::new(),
             decoded_bytes: 0,
+            use_bc,
             replacements: [None; 2],
         }
     }
@@ -292,27 +295,35 @@ impl<'a> Materials<'a> {
         let alpha = definition.alpha();
         let path = definition.base.or_else(|| material_path(name, ".vtf"))?;
         let key = (path, alpha);
-        let index = if let Some(index) = self.decoded.get(&key) {
+        let index = if let Some(index) = self.by_image.get(&key) {
             *index
         } else {
             let bytes = self.read(&key.0)?;
             let texture = vtf::parse(&bytes, &self.limits).ok()?;
             let output_bytes = texture.width() as usize * texture.height() as usize * 4;
-            if self.decoded_bytes.saturating_add(output_bytes) > MAX_DECODED_BYTES {
+            // Keep map material admission identical on compressed and decoded adapters.
+            if output_bytes as u64 > self.limits.max_entry_bytes
+                || self.decoded_bytes.saturating_add(output_bytes) > MAX_DECODED_BYTES
+            {
                 return None;
             }
-            let image = texture.decode_rgba(0, 0, 0, &self.limits).ok()?;
-            self.decoded_bytes += image.rgba.len();
+            let bc = self.use_bc.then(|| BcTexture::from_vtf(&texture)).flatten();
+            let rgba = if bc.is_none() {
+                texture.decode_rgba(0, 0, 0, &self.limits).ok()?.rgba
+            } else {
+                Vec::new()
+            };
+            self.decoded_bytes += output_bytes;
             let index = self.textures.len();
             self.textures.push(CourseTexture {
-                bc: None,
+                bc,
                 name: key.0.clone(),
-                width: image.width,
-                height: image.height,
-                rgba: image.rgba,
+                width: texture.width(),
+                height: texture.height(),
+                rgba,
                 alpha: alpha.into(),
             });
-            self.decoded.insert(key, index);
+            self.by_image.insert(key, index);
             index
         };
         Some(Resolved {

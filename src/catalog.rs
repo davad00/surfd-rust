@@ -500,12 +500,21 @@ pub mod files {
     }
 
     pub fn load_source(root: &Path, entry: &CatalogEntry, visuals: bool) -> Result<Course, String> {
+        load_source_with_bc(root, entry, visuals, false)
+    }
+
+    pub fn load_source_with_bc(
+        root: &Path,
+        entry: &CatalogEntry,
+        visuals: bool,
+        use_bc: bool,
+    ) -> Result<Course, String> {
         let raw = root.join(format!("{}.bsp", entry.slug));
         let zipped = raw.with_extension("bsp.gz");
         let local = if raw.is_file() { raw } else { zipped };
         let load = |path: &Path| {
             if visuals {
-                crate::source_bsp::load_ranked(path, entry)
+                crate::source_bsp::load_ranked_with_bc(path, entry, use_bc)
             } else {
                 crate::source_bsp::load_ranked_collision(path, entry)
             }

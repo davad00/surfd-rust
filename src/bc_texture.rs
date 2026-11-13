@@ -16,14 +16,15 @@ impl BcFormat {
     }
 }
 
-/// A validated single-layer DDS containing the original Source mip chain.
+/// Validated, largest-first block data for a single-layer texture.
 pub struct BcTexture {
     pub format: BcFormat,
     pub width: u32,
     pub height: u32,
     pub mip_levels: u32,
     pub rgb_only: bool,
-    dds: Vec<u8>,
+    data: Vec<u8>,
+    block_offset: usize,
 }
 
 const HEADER_BYTES: usize = 128;
@@ -41,21 +42,8 @@ impl BcTexture {
         let width = word(16);
         let height = word(12);
         let mip_levels = word(28).max(1);
-        if ![width, height]
-            .into_iter()
-            .all(|side| (4..=16_384).contains(&side) && side % 4 == 0)
-            || mip_levels > width.max(height).ilog2() + 1
-        {
-            return Err("Invalid DDS dimensions or mip count");
-        }
-        let bytes_per_block = if format == BcFormat::Bc1 { 8 } else { 16 };
-        let length = (0..mip_levels)
-            .map(|level| {
-                let blocks_wide = (width >> level).max(1).div_ceil(4) as usize;
-                let blocks_high = (height >> level).max(1).div_ceil(4) as usize;
-                blocks_wide * blocks_high * bytes_per_block
-            })
-            .sum::<usize>();
+        let length = mip_chain_len(format, width, height, mip_levels)
+            .ok_or("Invalid DDS dimensions or mip count")?;
         if dds.len() - HEADER_BYTES != length {
             return Err("Incomplete or oversized DDS mip chain");
         }
@@ -65,18 +53,79 @@ impl BcTexture {
             height,
             mip_levels,
             rgb_only: false,
-            dds,
+            data: dds,
+            block_offset: HEADER_BYTES,
+        })
+    }
+
+    pub(crate) fn from_vtf(texture: &vformats::vtf::Vtf<'_>) -> Option<Self> {
+        use vformats::vtf::BcFormat as VtfFormat;
+
+        let raw = texture.raw_bc(0, 0)?;
+        let format = match raw.format {
+            VtfFormat::Bc1 => BcFormat::Bc1,
+            VtfFormat::Bc2 => BcFormat::Bc2,
+            VtfFormat::Bc3 => BcFormat::Bc3,
+        };
+        let mip_levels = u32::from(texture.mip_count());
+        let length = mip_chain_len(format, raw.width, raw.height, mip_levels)?;
+        if raw.truncated || raw.mips.len() != mip_levels as usize {
+            return None;
+        }
+
+        let mut data = Vec::with_capacity(length);
+        for (level, mip) in raw.mips.iter().rev().enumerate() {
+            if mip.width != (raw.width >> level).max(1)
+                || mip.height != (raw.height >> level).max(1)
+                || mip.data.len() != mip_len(format, mip.width, mip.height)
+            {
+                return None;
+            }
+            data.extend_from_slice(mip.data);
+        }
+        Some(Self {
+            format,
+            width: raw.width,
+            height: raw.height,
+            mip_levels,
+            // The CPU decoder interprets both VTF BC1 encodings with one-bit alpha.
+            rgb_only: false,
+            data,
+            block_offset: 0,
         })
     }
 
     pub fn blocks(&self) -> &[u8] {
-        &self.dds[HEADER_BYTES..]
+        &self.data[self.block_offset..]
     }
 
     pub fn into_blocks(mut self) -> Vec<u8> {
-        drop(self.dds.drain(..HEADER_BYTES));
-        self.dds
+        if self.block_offset != 0 {
+            drop(self.data.drain(..self.block_offset));
+        }
+        self.data
     }
+}
+
+fn mip_len(format: BcFormat, width: u32, height: u32) -> usize {
+    let bytes_per_block = if format == BcFormat::Bc1 { 8 } else { 16 };
+    width.div_ceil(4) as usize * height.div_ceil(4) as usize * bytes_per_block
+}
+
+fn mip_chain_len(format: BcFormat, width: u32, height: u32, levels: u32) -> Option<usize> {
+    if ![width, height]
+        .into_iter()
+        .all(|side| (4..=16_384).contains(&side) && side % 4 == 0)
+        || levels == 0
+        || levels > width.max(height).ilog2() + 1
+    {
+        return None;
+    }
+    Some(
+        (0..levels)
+            .map(|level| mip_len(format, (width >> level).max(1), (height >> level).max(1)))
+            .sum(),
+    )
 }
 
 #[cfg(test)]
@@ -106,5 +155,45 @@ mod tests {
         assert_eq!(blocks.as_ptr(), allocation);
         data.pop();
         assert!(BcTexture::read(data).is_err());
+    }
+
+    #[test]
+    fn vtf_upload_reverses_mips_and_preserves_bc1_alpha_semantics() {
+        for (source_format, expected) in [
+            (13_i32, BcFormat::Bc1),
+            (20, BcFormat::Bc1),
+            (14, BcFormat::Bc2),
+            (15, BcFormat::Bc3),
+        ] {
+            let block_size = mip_len(expected, 4, 4);
+            let mut fixture = vec![0; 64];
+            fixture[..4].copy_from_slice(b"VTF\0");
+            fixture[4..8].copy_from_slice(&7_u32.to_le_bytes());
+            fixture[12..16].copy_from_slice(&64_u32.to_le_bytes());
+            fixture[16..18].copy_from_slice(&8_u16.to_le_bytes());
+            fixture[18..20].copy_from_slice(&8_u16.to_le_bytes());
+            fixture[52..56].copy_from_slice(&source_format.to_le_bytes());
+            fixture[56] = 2;
+            fixture[57..61].copy_from_slice(&(-1_i32).to_le_bytes());
+            fixture.extend(std::iter::repeat_n(0x11, block_size));
+            fixture.extend(std::iter::repeat_n(0x22, block_size * 4));
+
+            let limits = vformats::Limits::default();
+            let texture = vformats::vtf::parse(&fixture, &limits).unwrap();
+            let blocks = BcTexture::from_vtf(&texture).unwrap();
+            assert_eq!(blocks.format, expected);
+            assert_eq!(blocks.mip_levels, 2);
+            assert!(!blocks.rgb_only);
+            let allocation = blocks.blocks().as_ptr();
+            let blocks = blocks.into_blocks();
+            assert_eq!(blocks.as_ptr(), allocation);
+            assert_eq!(blocks.len(), block_size * 5);
+            assert!(blocks[..block_size * 4].iter().all(|&byte| byte == 0x22));
+            assert!(blocks[block_size * 4..].iter().all(|&byte| byte == 0x11));
+
+            fixture.pop();
+            let truncated = vformats::vtf::parse(&fixture, &limits).unwrap();
+            assert!(BcTexture::from_vtf(&truncated).is_none());
+        }
     }
 }

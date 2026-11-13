@@ -59,15 +59,27 @@ const LIGHTING_HDR: usize = 53;
 const FACES_HDR: usize = 58;
 
 pub fn load(path: &Path) -> Result<Course, String> {
-    load_file(path, None, true)
+    load_with_bc(path, false)
+}
+
+pub fn load_with_bc(path: &Path, use_bc: bool) -> Result<Course, String> {
+    load_file(path, None, true, use_bc)
 }
 
 pub fn load_ranked(path: &Path, entry: &CatalogEntry) -> Result<Course, String> {
-    load_file(path, Some(entry), true)
+    load_ranked_with_bc(path, entry, false)
+}
+
+pub fn load_ranked_with_bc(
+    path: &Path,
+    entry: &CatalogEntry,
+    use_bc: bool,
+) -> Result<Course, String> {
+    load_file(path, Some(entry), true, use_bc)
 }
 
 pub(crate) fn load_ranked_collision(path: &Path, entry: &CatalogEntry) -> Result<Course, String> {
-    load_file(path, Some(entry), false)
+    load_file(path, Some(entry), false, false)
 }
 
 pub fn ranked_files_match(path: &Path, entry: &CatalogEntry) -> bool {
@@ -222,6 +234,7 @@ fn load_file(
     path: &Path,
     ranked: Option<&CatalogEntry>,
     load_visuals: bool,
+    use_bc: bool,
 ) -> Result<Course, String> {
     let bytes = read_bsp_bytes(path)?;
     let name = map_name(path).ok_or("Expected a .bsp or .bsp.gz map")?;
@@ -246,6 +259,7 @@ fn load_file(
             Some(path),
             timer,
             load_visuals,
+            use_bc,
             ranked.map_or(crate::catalog::SOURCE_MAP_RULES, |entry| {
                 entry.min_source_rules
             }),
@@ -265,6 +279,7 @@ fn parse(
     map_path: Option<&Path>,
     timer: Option<timer::Sidecar>,
     load_visuals: bool,
+    use_bc: bool,
     source_rules: u8,
 ) -> Result<Course, String> {
     let file = BspFile::new(bytes)?;
@@ -272,7 +287,7 @@ fn parse(
     let pak = load_visuals
         .then(|| file.lump(PAKFILE).unwrap_or_default())
         .unwrap_or_default();
-    let mut materials = Materials::new(&pak, map_path.filter(|_| load_visuals));
+    let mut materials = Materials::new(&pak, map_path.filter(|_| load_visuals), use_bc);
     let lighting = load_visuals
         .then(|| file.lump(geometry.lighting).unwrap_or_default())
         .unwrap_or_default();
@@ -1254,7 +1269,7 @@ mod tests {
                 { "classname" "info_player_teamspawn" "origin" "15 25 35" "angles" "0 90 0" }
             "#,
         );
-        let course = parse(&bytes, "fixture", None, None, false, 0).unwrap();
+        let course = parse(&bytes, "fixture", None, None, false, false, 0).unwrap();
         assert_eq!(course.spawn, Vec3::new(15.0, 35.0, -25.0));
         assert_eq!(course.spawn_yaw, 0.0);
     }
@@ -1295,7 +1310,7 @@ mod tests {
 
     #[test]
     fn source_brushes_faces_and_teleports_share_the_same_axes() {
-        let course = parse(&fixture(), "fixture", None, None, true, 0).unwrap();
+        let course = parse(&fixture(), "fixture", None, None, true, false, 0).unwrap();
         assert_eq!(course.spawn, Vec3::new(15.0, 35.0, -25.0));
         assert_eq!(course.spawn_yaw, 0.0);
         assert_eq!(course.brushes.len(), 1);
@@ -1322,7 +1337,7 @@ mod tests {
         let mut bytes = fixture();
         let entry = 8 + PLANES * 16;
         put(&mut bytes, entry, u32::MAX.to_le_bytes());
-        let error = parse(&bytes, "truncated", None, None, true, 0)
+        let error = parse(&bytes, "truncated", None, None, true, false, 0)
             .err()
             .unwrap();
         assert!(error.contains("invalid range"));
@@ -1340,8 +1355,8 @@ mod tests {
                 { "classname" "info_player_counterterrorist" "origin" "15 25 35" }
             "#,
         );
-        let visible = parse(&bytes, "fixture", None, None, true, 0).unwrap();
-        let collision = parse(&bytes, "fixture", None, None, false, 0).unwrap();
+        let visible = parse(&bytes, "fixture", None, None, true, false, 0).unwrap();
+        let collision = parse(&bytes, "fixture", None, None, false, false, 0).unwrap();
         let face = &visible.surfaces[0];
         let material = face
             .texture

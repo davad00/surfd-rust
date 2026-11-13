@@ -37,8 +37,12 @@ pub fn default_mode(path: &Path, name: &str) -> MapMode {
 }
 
 pub fn load(path: &Path) -> Result<Course, String> {
+    load_with_bc(path, false)
+}
+
+pub fn load_with_bc(path: &Path, use_bc: bool) -> Result<Course, String> {
     let mut course = match format(path)? {
-        Format::Source => return source_bsp::load(path),
+        Format::Source => return source_bsp::load_with_bc(path, use_bc),
         Format::Quake => quake_bsp::load(path),
         Format::GoldSrc => goldsrc_bsp::load(path),
         Format::Quake3 => quake3_bsp::load(path),

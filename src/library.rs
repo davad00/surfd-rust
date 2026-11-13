@@ -80,13 +80,14 @@ impl MapSource {
         options: VisualLoadOptions,
         status: impl Fn(String),
     ) -> Result<Course, String> {
+        let source_bc = options.use_bc && std::env::var("SURF_SOURCE_BC").is_ok_and(|v| v == "1");
         match self {
             Self::Downline => Ok(Course::practice()),
             Self::Tutorial(id) => {
                 tutorial::course(id).ok_or_else(|| format!("Unknown lesson: {id}"))
             }
             Self::Source(path) => {
-                let course = local_map::load(&path)?;
+                let course = local_map::load_with_bc(&path, source_bc)?;
                 if !local_map::has_start_and_finish(&course) {
                     return Err("This map has no verified start and finish zones.".into());
                 }
@@ -102,10 +103,10 @@ impl MapSource {
             Self::RankedBsp { map, path } => {
                 let entry = catalog::find(&map).ok_or("Unknown ranked Source map")?;
                 if let Some(path) = path {
-                    return source_bsp::load_ranked(&path, entry);
+                    return source_bsp::load_ranked_with_bc(&path, entry, source_bc);
                 }
                 status(format!("Loading {} and its verified timer…", entry.name));
-                catalog::files::load_source(directory, entry, true)
+                catalog::files::load_source_with_bc(directory, entry, true, source_bc)
             }
             Self::Catalog {
                 slug,
