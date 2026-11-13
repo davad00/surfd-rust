@@ -1,0 +1,351 @@
+{
+  "version": 1,
+  "bsp_sha256": "6105509a272665c24b5545bf12dce9070aa7078ade0433eef3d7b57ba64bd15a",
+  "timer": "shavit",
+  "mode": "surf",
+  "tier": 2,
+  "max_velocity": 3500,
+  "source_movement": {
+    "ground_acceleration": 10,
+    "ground_friction": 5.2
+  },
+  "tracks": [
+    {
+      "id": 0,
+      "checkpoints_required": true,
+      "checkpoints_ordered": true,
+      "bhop_enabled": true,
+      "limit_start_ground_speed": true,
+      "start_speed_cap": 350
+    },
+    {
+      "id": 1,
+      "checkpoints_required": true,
+      "checkpoints_ordered": true,
+      "bhop_enabled": true,
+      "limit_start_ground_speed": true,
+      "start_speed_cap": 350
+    },
+    {
+      "id": 2,
+      "checkpoints_required": true,
+      "checkpoints_ordered": true,
+      "bhop_enabled": true,
+      "limit_start_ground_speed": true,
+      "start_speed_cap": 350
+    },
+    {
+      "id": 3,
+      "checkpoints_required": true,
+      "checkpoints_ordered": true,
+      "bhop_enabled": true,
+      "limit_start_ground_speed": true,
+      "start_speed_cap": 350
+    }
+  ],
+  "zones": [
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 2,
+      "points": [
+        [
+          -4836.97,
+          -8407.1
+        ],
+        [
+          186.969,
+          -8407.1
+        ],
+        [
+          186.969,
+          -7240.49
+        ],
+        [
+          -4836.97,
+          -7240.49
+        ]
+      ],
+      "bottom": -144.715,
+      "height": 13.40100000000001
+    },
+    {
+      "kind": "end",
+      "track": 3,
+      "points": [
+        [
+          -9983.05,
+          -11998
+        ],
+        [
+          -8160.95,
+          -11998
+        ],
+        [
+          -8160.95,
+          -11510
+        ],
+        [
+          -9983.05,
+          -11510
+        ]
+      ],
+      "bottom": -1219,
+      "height": 382,
+      "hook_target": "bonus3_endzone"
+    },
+    {
+      "kind": "start",
+      "track": 3,
+      "points": [
+        [
+          -9329,
+          -1238.05
+        ],
+        [
+          -8815,
+          -1238.05
+        ],
+        [
+          -8815,
+          -940.05
+        ],
+        [
+          -9329,
+          -940.05
+        ]
+      ],
+      "bottom": 1769,
+      "height": 226,
+      "hook_target": "bonus3_startzone",
+      "target": "bonus3reset"
+    },
+    {
+      "kind": "end",
+      "track": 2,
+      "points": [
+        [
+          9755,
+          -7896
+        ],
+        [
+          10867.2,
+          -7896
+        ],
+        [
+          10867.2,
+          -6390
+        ],
+        [
+          9755,
+          -6390
+        ]
+      ],
+      "bottom": -4782,
+      "height": 546,
+      "hook_target": "bonus2_endzone"
+    },
+    {
+      "kind": "start",
+      "track": 2,
+      "points": [
+        [
+          1785.17,
+          -6584
+        ],
+        [
+          3515.17,
+          -6584
+        ],
+        [
+          3515.17,
+          -4630
+        ],
+        [
+          1785.17,
+          -4630
+        ]
+      ],
+      "bottom": 1266,
+      "height": 244,
+      "hook_target": "bonus2_startzone",
+      "target": "bonus2reset"
+    },
+    {
+      "kind": "end",
+      "track": 1,
+      "points": [
+        [
+          -13004,
+          7979
+        ],
+        [
+          -10442,
+          7979
+        ],
+        [
+          -10442,
+          8684
+        ],
+        [
+          -13004,
+          8684
+        ]
+      ],
+      "bottom": -7163,
+      "height": 610,
+      "hook_target": "bonus1_endzone"
+    },
+    {
+      "kind": "start",
+      "track": 1,
+      "points": [
+        [
+          -12364,
+          -9973
+        ],
+        [
+          -11082,
+          -9973
+        ],
+        [
+          -11082,
+          -9267
+        ],
+        [
+          -12364,
+          -9267
+        ]
+      ],
+      "bottom": -4571,
+      "height": 210,
+      "hook_target": "bonus1_startzone",
+      "target": "bonus1reset"
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 1,
+      "points": [
+        [
+          -3380.97,
+          3585.34
+        ],
+        [
+          -1269.03,
+          3585.34
+        ],
+        [
+          -1269.03,
+          3673.05
+        ],
+        [
+          -3380.97,
+          3673.05
+        ]
+      ],
+      "bottom": 1343.24,
+      "height": 1318.05
+    },
+    {
+      "kind": "end",
+      "track": 0,
+      "points": [
+        [
+          6522,
+          8455
+        ],
+        [
+          6859,
+          8455
+        ],
+        [
+          6859,
+          9273
+        ],
+        [
+          6522,
+          9273
+        ]
+      ],
+      "bottom": -3593,
+      "height": 680,
+      "hook_target": "map_endzone"
+    },
+    {
+      "kind": "start",
+      "track": 0,
+      "points": [
+        [
+          -3222,
+          951
+        ],
+        [
+          -1428,
+          951
+        ],
+        [
+          -1428,
+          1465
+        ],
+        [
+          -3222,
+          1465
+        ]
+      ],
+      "bottom": 4317,
+      "height": 237,
+      "hook_target": "map_startzone"
+    },
+    {
+      "kind": "end",
+      "track": 0,
+      "points": [
+        [
+          5431.03,
+          8456.16
+        ],
+        [
+          6858.82,
+          8456.16
+        ],
+        [
+          6858.82,
+          9269.57
+        ],
+        [
+          5431.03,
+          9269.57
+        ]
+      ],
+      "bottom": -3591.97,
+      "height": 665.1799999999998
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 3,
+      "points": [
+        [
+          -3395.15,
+          9807.83
+        ],
+        [
+          -1253.03,
+          9807.83
+        ],
+        [
+          -1253.03,
+          9831.19
+        ],
+        [
+          -3395.15,
+          9831.19
+        ]
+      ],
+      "bottom": -3141.97,
+      "height": 1512.4799999999998
+    }
+  ],
+  "entity_output_fixes": []
+}

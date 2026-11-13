@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "bsp_sha256": "81c40545fd2511d04916125535a63a1e91e1a7e8a946a16418cf58b40f959a87",
+  "timer": "shavit",
+  "mode": "surf",
+  "tier": 1,
+  "max_velocity": 3500,
+  "source_movement": {
+    "ground_acceleration": 10,
+    "ground_friction": 5.2
+  },
+  "tracks": [
+    {
+      "id": 0,
+      "checkpoints_required": true,
+      "checkpoints_ordered": true,
+      "bhop_enabled": true,
+      "limit_start_ground_speed": true,
+      "start_speed_cap": 260
+    }
+  ],
+  "zones": [
+    {
+      "kind": "start",
+      "track": 0,
+      "points": [
+        [
+          -14920.8,
+          -1023.42
+        ],
+        [
+          -13568.3,
+          -1023.42
+        ],
+        [
+          -13568.3,
+          911.36
+        ],
+        [
+          -14920.8,
+          911.36
+        ]
+      ],
+      "bottom": 4608.03,
+      "height": 584.4400000000005
+    },
+    {
+      "kind": "end",
+      "track": 0,
+      "points": [
+        [
+          9516.09,
+          -1807.97
+        ],
+        [
+          13563.3,
+          -1807.97
+        ],
+        [
+          13563.3,
+          2008.94
+        ],
+        [
+          9516.09,
+          2008.94
+        ]
+      ],
+      "bottom": -5631.97,
+      "height": 820.8699999999999
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 1,
+      "points": [
+        [
+          3015.44,
+          -1736.15
+        ],
+        [
+          3327.97,
+          -1736.15
+        ],
+        [
+          3327.97,
+          1519.81
+        ],
+        [
+          3015.44,
+          1519.81
+        ]
+      ],
+      "bottom": 1984.03,
+      "height": 1215.5200000000002
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 2,
+      "points": [
+        [
+          -725.246,
+          -2528.1
+        ],
+        [
+          767.969,
+          -2528.1
+        ],
+        [
+          767.969,
+          1414.36
+        ],
+        [
+          -725.246,
+          1414.36
+        ]
+      ],
+      "bottom": -3327.97,
+      "height": 1284.6799999999998
+    }
+  ],
+  "entity_output_fixes": [],
+  "source_gravity_outputs": true
+}

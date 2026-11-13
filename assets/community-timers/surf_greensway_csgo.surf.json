@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "bsp_sha256": "2bcc5c2add3ba347817d49103ab5fab6e8f90722d94f285022f8f4387f43e48c",
+  "timer": "shavit",
+  "mode": "surf",
+  "tier": 2,
+  "max_velocity": 3500,
+  "source_movement": {
+    "ground_acceleration": 10,
+    "ground_friction": 5.2
+  },
+  "tracks": [
+    {
+      "id": 0,
+      "checkpoints_required": true,
+      "checkpoints_ordered": true,
+      "bhop_enabled": true,
+      "limit_start_ground_speed": true,
+      "start_speed_cap": 350
+    }
+  ],
+  "zones": [
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 2,
+      "points": [
+        [
+          -11009,
+          -4778.64
+        ],
+        [
+          -6399.01,
+          -4778.64
+        ],
+        [
+          -6399.01,
+          -4264.64
+        ],
+        [
+          -11009,
+          -4264.64
+        ]
+      ],
+      "bottom": -9217,
+      "height": 5890,
+      "hook_target": "checkpoint_2"
+    },
+    {
+      "kind": "end",
+      "track": 0,
+      "points": [
+        [
+          9051,
+          -8365
+        ],
+        [
+          9873,
+          -8365
+        ],
+        [
+          9873,
+          -7091
+        ],
+        [
+          9051,
+          -7091
+        ]
+      ],
+      "bottom": -9245,
+      "height": 990,
+      "hook_target": "end_trigger"
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 1,
+      "points": [
+        [
+          -1025,
+          3839
+        ],
+        [
+          2305,
+          3839
+        ],
+        [
+          2305,
+          4353
+        ],
+        [
+          -1025,
+          4353
+        ]
+      ],
+      "bottom": -6145,
+      "height": 7170,
+      "hook_target": "checkpoint_1"
+    },
+    {
+      "kind": "start",
+      "track": 0,
+      "points": [
+        [
+          31,
+          -12673
+        ],
+        [
+          1313,
+          -12673
+        ],
+        [
+          1313,
+          -12399
+        ],
+        [
+          31,
+          -12399
+        ]
+      ],
+      "bottom": 863,
+      "height": 274,
+      "hook_target": "start_trigger"
+    }
+  ],
+  "entity_output_fixes": []
+}
