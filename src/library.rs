@@ -1,10 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 
 use bevy::prelude::*;
 use bevy_surf::catalog::{
-    self, MapMode,
+    self, CatalogEntry, MapMode,
     files::{agent, cache_directory, fetch_asset},
 };
 use bevy_surf::{
@@ -56,6 +56,7 @@ pub enum MapSource {
     Downline,
     Tutorial(&'static str),
     Source(PathBuf),
+    PracticeBsp(Arc<CatalogEntry>),
     RankedBsp {
         map: String,
         path: Option<PathBuf>,
@@ -89,6 +90,13 @@ impl MapSource {
                 if !local_map::has_start_and_finish(&course) {
                     return Err("This map has no verified start and finish zones.".into());
                 }
+                Ok(course)
+            }
+            Self::PracticeBsp(entry) => {
+                status(format!("Loading {} and its verified timer…", entry.name));
+                let mut course =
+                    catalog::files::load_source(&directory.join("practice-cache"), &entry, true)?;
+                course.catalog_revision = None;
                 Ok(course)
             }
             Self::RankedBsp { map, path } => {
@@ -129,6 +137,59 @@ pub struct MapEntry {
 #[cfg(test)]
 mod local_map_tests {
     use super::*;
+
+    #[test]
+    fn practice_manifest_entries_cannot_replace_ranked_maps_or_join_rooms() {
+        let manifest = serde_json::json!({
+            "version": 1,
+            "maps": ["surf_kitsune", "bhop_practice_catalog_fixture"].map(|id| serde_json::json!({
+                "id": id,
+                "slug": id,
+                "name": id,
+                "author": "Map author",
+                "mode": "bhop",
+                "tier": 2,
+                "type": "linear",
+                "bonuses": 0,
+                "sourceBsp": {"bspSha256": "a".repeat(64), "timerSha256": "b".repeat(64)},
+                "download": {
+                    "bspUrl": "https://example.com/map.bsp.bz2",
+                    "timerUrl": "https://example.com/map.surf.json",
+                    "compression": "bzip2",
+                    "stages": 0,
+                    "checkpoints": 0
+                }
+            }))
+        });
+        let mut library = MapLibrary::read_with_roots(PathBuf::new(), []);
+        library
+            .add_practice_catalog(&serde_json::to_vec(&manifest).unwrap())
+            .unwrap();
+
+        let practice = library
+            .entries
+            .iter()
+            .filter(|map| map.is_practice_download())
+            .collect::<Vec<_>>();
+        assert_eq!(practice.len(), 1);
+        assert_eq!(practice[0].id, "practice:bhop_practice_catalog_fixture");
+        assert_eq!(practice[0].mode, MapMode::Bhop);
+        assert_eq!(practice[0].tier, Some(2));
+        assert!(catalog::find("bhop_practice_catalog_fixture").is_none());
+        assert!(
+            library
+                .catalog_source("bhop_practice_catalog_fixture")
+                .is_none()
+        );
+        for managed in [true, false] {
+            assert!(
+                library
+                    .room_source("bhop_practice_catalog_fixture", MapMode::Bhop, managed)
+                    .is_none()
+            );
+        }
+        assert!(library.catalog_source("surf_kitsune").is_some());
+    }
 
     #[test]
     fn reads_local_maps_from_distinct_roots_without_shadowing_catalog() {
@@ -219,6 +280,10 @@ impl MapEntry {
         matches!(&self.source, MapSource::Source(_))
     }
 
+    pub fn is_practice_download(&self) -> bool {
+        matches!(&self.source, MapSource::PracticeBsp(_))
+    }
+
     pub fn preview(&self) -> Option<PathBuf> {
         let MapSource::Catalog { slug, .. } = &self.source else {
             return None;
@@ -230,6 +295,7 @@ impl MapEntry {
         match &self.source {
             MapSource::Downline | MapSource::Tutorial(_) => "BUILT IN",
             MapSource::Source(_) => "LOCAL MAP",
+            MapSource::PracticeBsp(_) => "PRACTICE ONLY",
             MapSource::RankedBsp { .. } => "RANKED BSP",
             MapSource::Catalog { slug, .. }
                 if cache_directory(directory, slug).join("ready").is_file() =>
@@ -300,6 +366,9 @@ impl MapLibrary {
 
     pub fn read() -> Self {
         let directory = data_directory();
+        let practice_catalog = environment_directory("SURF_PRACTICE_CATALOG").or_else(|| {
+            Some(directory.join("practice-catalog.json")).filter(|path| path.is_file())
+        });
         let mut roots = vec![directory.clone()];
         if let Ok(exe) = std::env::current_exe()
             && let Some(parent) = exe.parent()
@@ -309,7 +378,36 @@ impl MapLibrary {
         if let Some(configured) = std::env::var_os("SURF_MAPS") {
             roots.extend(std::env::split_paths(&configured));
         }
-        Self::read_with_roots(directory, roots)
+        let mut library = Self::read_with_roots(directory, roots);
+        if let Some(path) = practice_catalog
+            && let Err(error) =
+                catalog::read_catalog(&path).and_then(|bytes| library.add_practice_catalog(&bytes))
+        {
+            warn!(
+                "Could not open practice map catalog {}: {error}",
+                path.display()
+            );
+        }
+        library
+    }
+
+    fn add_practice_catalog(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let practice = catalog::parse_source_catalog(bytes)?;
+        self.entries.extend(
+            practice
+                .maps
+                .into_iter()
+                .filter(|map| catalog::find(&map.id).is_none())
+                .map(|map| MapEntry {
+                    id: format!("practice:{}", map.id),
+                    name: map.name.clone(),
+                    detail: format!("{} · {} · Practice movement", map.author, map.layout),
+                    mode: map.mode,
+                    tier: map.tier,
+                    source: MapSource::PracticeBsp(Arc::new(map)),
+                }),
+        );
+        Ok(())
     }
 
     fn read_with_roots(directory: PathBuf, roots: impl IntoIterator<Item = PathBuf>) -> Self {

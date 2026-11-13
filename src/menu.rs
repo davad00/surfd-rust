@@ -1838,8 +1838,8 @@ fn map_library(
         title(
             parent,
             "SOLO PRACTICE",
-            "Local maps",
-            format!("{} installed {} maps", matches.len(), menu.map_mode.label()),
+            "Practice maps",
+            format!("{} {} maps", matches.len(), menu.map_mode.label()),
         );
     } else {
         title(
@@ -1889,10 +1889,10 @@ fn map_library(
             if menu.local_maps_only {
                 button(row, "All maps", Action::Open(Page::Maps), false);
             } else {
-                button(row, "Local maps", Action::BrowseLocalMaps, false);
+                button(row, "Practice maps", Action::BrowseLocalMaps, false);
             }
             button(row, "Current course", Action::Open(Page::Practice), false);
-            button(row, "Rescan local maps", Action::Refresh, false);
+            button(row, "Refresh maps", Action::Refresh, false);
             if !menu.local_maps_only
                 && let Some(step) = next_path
             {
@@ -1996,7 +1996,13 @@ fn filtered_maps<'a>(library: &'a MapLibrary, menu: &MenuState) -> Vec<(usize, &
         .enumerate()
         .filter(|(_, map)| map.tier.is_some())
         .filter(|(_, map)| map.mode == menu.map_mode)
-        .filter(|(_, map)| !menu.local_maps_only || map.is_local())
+        .filter(|(_, map)| {
+            if menu.local_maps_only {
+                map.is_local() || map.is_practice_download()
+            } else {
+                !map.is_practice_download()
+            }
+        })
         .filter(|(_, map)| {
             query.is_empty()
                 || map.id.to_lowercase().contains(&query)
@@ -2049,7 +2055,7 @@ fn practice(parent: &mut ChildSpawnerCommands, menu: &MenuState, game: &Game) {
         .with_children(|actions| {
             button(actions, "Main course", Action::Bonus(None), true);
             button(actions, "Choose a map", Action::Open(Page::Maps), false);
-            button(actions, "Local maps", Action::BrowseLocalMaps, false);
+            button(actions, "Practice maps", Action::BrowseLocalMaps, false);
             button(actions, "Surf School", Action::Open(Page::Training), false);
             button(actions, "Save position", Action::SavePosition, false);
             button(actions, "Load position", Action::RestorePosition, false);

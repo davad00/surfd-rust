@@ -820,7 +820,8 @@ impl Online {
         let Some(owner) = self.profile.as_ref().map(|profile| profile.id) else {
             return false;
         };
-        self.token.is_some()
+        game.course.board_revision(game.selected_bonus()).is_some()
+            && self.token.is_some()
             && !self.ranked_saves.iter().any(|save| {
                 save.epoch == Some(game.run_epoch)
                     || (save.belongs_to(owner, &self.records_origin)
@@ -1770,6 +1771,9 @@ impl Online {
     }
 
     fn ensure_attempt(&mut self, game: &Game, page: Page) {
+        if game.course.board_revision(game.selected_bonus()).is_none() {
+            return;
+        }
         let epoch = game.run_epoch;
         let finished = game
             .finished_replay()
@@ -1786,9 +1790,6 @@ impl Online {
             .as_ref()
             .is_none_or(|attempt| attempt.epoch != epoch)
         {
-            if game.course.board_revision(game.selected_bonus()).is_none() {
-                return;
-            }
             let attempt_owner = if finished.is_some() && !game.signed_at_finish {
                 None
             } else {
@@ -4054,6 +4055,23 @@ mod tests {
     };
 
     const QUICK_PLAY_FIXTURE_MAP: &str = "quick-play-fixture";
+
+    #[test]
+    fn practice_course_cannot_open_a_ranked_attempt_with_a_ranked_map_name() {
+        let mut course = Course::practice();
+        course.name = "surf_kitsune".into();
+        course.catalog_revision = None;
+        let game = Game::new(course);
+        let mut online = Online::default();
+        assert!(bevy_surf::catalog::find(&game.course.name).is_some());
+        assert!(!game.session.ranked_eligible());
+        online.ensure_attempt(&game, Page::Playing);
+        assert!(online.attempt.is_none());
+
+        online.ensure_attempt(&game, Page::Finished);
+        assert!(online.attempt.is_none());
+        assert!(!online.can_submit(&game));
+    }
 
     #[test]
     fn numbered_room_vote_keys_are_one_based_and_ignore_modifiers() {

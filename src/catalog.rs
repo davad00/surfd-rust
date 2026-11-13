@@ -232,15 +232,49 @@ pub fn cache_catalog(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 pub fn configure_community(data: &[u8]) -> Result<(), String> {
+    let mut catalog = parse_source_catalog(data)?;
+    let base = bundled_entries();
+    for entry in &catalog.maps {
+        if let Some(known) = base
+            .iter()
+            .find(|known| known.id == entry.id || known.slug == entry.id)
+        {
+            if !(known.id == entry.id
+                && known.mode == entry.mode
+                && known.tier == entry.tier
+                && known.bonuses == entry.bonuses
+                && known.source_bsp.as_ref().is_some_and(|pin| {
+                    entry.source_bsp.as_ref().is_some_and(|source| {
+                        pin.bsp_sha256 == source.bsp_sha256
+                            && pin.timer_sha256 == source.timer_sha256
+                    })
+                }))
+            {
+                return Err(format!(
+                    "{} conflicts with a built-in map revision",
+                    entry.id
+                ));
+            }
+        } else {
+            catalog.new_maps.insert(entry.id.clone());
+        }
+    }
+    if ENTRIES.get().is_some() || COMMUNITY.set(catalog).is_err() {
+        return Err("The map catalog has already been initialized".into());
+    }
+    Ok(())
+}
+
+/// Validate pinned downloadable Source entries without registering them for ranked play.
+pub fn parse_source_catalog(data: &[u8]) -> Result<CommunityCatalog, String> {
     if data.len() > MAX_CATALOG_BYTES {
         return Err("Community map catalog exceeds 2 MiB".into());
     }
-    let mut catalog: CommunityCatalog = serde_json::from_slice(data)
+    let catalog: CommunityCatalog = serde_json::from_slice(data)
         .map_err(|error| format!("Invalid community map catalog: {error}"))?;
     if catalog.version != 1 || catalog.maps.len() > MAX_COMMUNITY_MAPS {
         return Err("Unsupported community map catalog version or size".into());
     }
-    let base = bundled_entries();
     let mut ids = HashSet::new();
     for entry in &catalog.maps {
         let valid_hash = |hash: &str| {
@@ -303,31 +337,8 @@ pub fn configure_community(data: &[u8]) -> Result<(), String> {
         {
             return Err(format!("Invalid community map entry: {}", entry.id));
         }
-        if let Some(known) = base
-            .iter()
-            .find(|known| known.id == entry.id || known.slug == entry.id)
-        {
-            if !(known.id == entry.id
-                && known.mode == entry.mode
-                && known.tier == entry.tier
-                && known.bonuses == entry.bonuses
-                && known.source_bsp.as_ref().is_some_and(|pin| {
-                    pin.bsp_sha256 == source.bsp_sha256 && pin.timer_sha256 == source.timer_sha256
-                }))
-            {
-                return Err(format!(
-                    "{} conflicts with a built-in map revision",
-                    entry.id
-                ));
-            }
-        } else {
-            catalog.new_maps.insert(entry.id.clone());
-        }
     }
-    if ENTRIES.get().is_some() || COMMUNITY.set(catalog).is_err() {
-        return Err("The map catalog has already been initialized".into());
-    }
-    Ok(())
+    Ok(catalog)
 }
 
 fn valid_download_url(url: &str) -> bool {
