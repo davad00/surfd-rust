@@ -101,6 +101,7 @@ pub(super) struct Sidecar {
     source_landmark_teleports: bool,
     #[serde(default)]
     source_player_filters: bool,
+    source_prestart_target: Option<String>,
     #[serde(skip)]
     revision: [u8; 32],
 }
@@ -178,6 +179,13 @@ impl Sidecar {
         }
         if !valid_source_missing_filters(&self.source_missing_filters) {
             return Err("Invalid imported missing filter names".into());
+        }
+        if self
+            .source_prestart_target
+            .as_deref()
+            .is_some_and(|target| !literal_target_name(target, true))
+        {
+            return Err("Imported prestart needs a literal BSP destination".into());
         }
         if self.bsp_sha256.len() != 64
             || !self.bsp_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -289,6 +297,7 @@ impl Sidecar {
                 && entry.min_source_rules < SOURCE_RULES_TIMED_TRIGGERS)
             || (self.source_player_filters && entry.min_source_rules < SOURCE_RULES_PLAYER_FILTERS)
             || ((self.source_movement.changes_defaults()
+                || self.source_prestart_target.is_some()
                 || self
                     .tracks
                     .iter()
@@ -446,6 +455,24 @@ impl Sidecar {
                 })
             };
             let mut spawn = starts.remove(&id);
+            if id == 0
+                && let Some(target) = &self.source_prestart_target
+            {
+                let entity = unique_source_entity(
+                    entities,
+                    target,
+                    &["info_teleport_destination"],
+                    extended_names,
+                )?;
+                let prestart = entity_spawn(entity, "Start")
+                    .ok_or_else(|| format!("Invalid prestart destination {target}"))?;
+                if spawn.is_some() || contains_start(prestart.position) {
+                    return Err(
+                        "Imported prestart must be separate from the main timer start".into(),
+                    );
+                }
+                spawn = Some(prestart);
+            }
             if spawn.is_none()
                 && matches!(self.timer, Timer::Shavit)
                 && (id != 0 || !contains_start(course.spawn))

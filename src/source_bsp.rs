@@ -1144,7 +1144,12 @@ mod tests {
 
     #[test]
     fn source_settings_require_the_pinned_timer_and_supported_rules() {
-        use crate::{catalog::SOURCE_RULES_MOVEMENT_SETTINGS, rules::MovementRules};
+        use crate::{
+            catalog::SOURCE_RULES_MOVEMENT_SETTINGS,
+            movement::MoveInput,
+            rules::MovementRules,
+            session::{RunPhase, Session},
+        };
         use sha2::{Digest, Sha256};
         use std::fs;
 
@@ -1160,6 +1165,7 @@ mod tests {
             br#"
             { "classname" "worldspawn" }
             { "classname" "info_player_counterterrorist" "origin" "15 25 35" "angles" "0 90 0" }
+            { "classname" "info_teleport_destination" "targetname" "approach" "origin" "-55 25 42" }
         "#,
         );
         let bsp_hash = format!("{:x}", Sha256::digest(&bsp));
@@ -1226,6 +1232,32 @@ mod tests {
                 .start_speed_cap,
             Some(350.0)
         );
+        doc["tracks"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("start_speed_cap");
+        doc["source_prestart_target"] = "approach".into();
+        entry.source_bsp.as_mut().unwrap().timer_sha256 = install_timer(&doc);
+        entry.min_source_rules = SOURCE_RULES_MOVEMENT_SETTINGS - 1;
+        assert!(load_ranked_collision(&path, &entry).is_err());
+        entry.min_source_rules = SOURCE_RULES_MOVEMENT_SETTINGS;
+        let approach = load_ranked_collision(&path, &entry).unwrap();
+        assert_ne!(approach.board_revision(None).unwrap(), legacy_board);
+        assert_eq!(approach.spawn, Vec3::new(-55.0, 42.0, -25.0));
+        let mut session = Session::new(&approach);
+        session.tick(&approach, MoveInput::default());
+        assert_eq!(session.phase, RunPhase::Ready);
+        assert_eq!(session.elapsed, 0.0);
+        session.player.velocity.x = 1000.0;
+        for _ in 0..10 {
+            session.tick(&approach, MoveInput::default());
+        }
+        assert_eq!(session.phase, RunPhase::Running);
+        assert!(session.elapsed > 0.0);
+        session.restart(&approach);
+        assert_eq!(session.player.position, approach.spawn);
+        assert_eq!(session.phase, RunPhase::Ready);
+        assert_eq!(session.elapsed, 0.0);
         fs::remove_file(&path).unwrap();
         fs::remove_file(&timer_path).unwrap();
         fs::remove_dir(directory).unwrap();
