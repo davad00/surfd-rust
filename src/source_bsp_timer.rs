@@ -9,7 +9,9 @@ use bevy_math::{DVec2, Vec2, Vec3};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use super::gameplay::override_push_velocity;
 use super::{Entity, Geometry, lookup, parse_vector, sidecar_path, source_axes};
+use crate::catalog::SOURCE_RULES_PUSH_SPEED_OVERRIDES;
 use crate::catalog::{
     CatalogEntry, MapMode, SOURCE_RULES_CSS_BHOP, SOURCE_RULES_MOVEMENT_SETTINGS,
     SOURCE_RULES_NORMALIZED_OUTPUTS, SOURCE_RULES_PLAYER_FILTERS, SOURCE_RULES_TICK_INTERVAL,
@@ -139,8 +141,18 @@ pub(super) struct Sidecar {
     #[serde(default)]
     source_speedmod: bool,
     source_start_policy: Option<SourceStartPolicy>,
+    #[serde(default)]
+    source_push_speed_overrides: Vec<PushSpeedOverride>,
     #[serde(skip)]
     revision: [u8; 32],
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PushSpeedOverride {
+    hammerid: u32,
+    from_speed: f32,
+    to_speed: f32,
 }
 
 #[derive(Deserialize)]
@@ -237,6 +249,18 @@ impl Sidecar {
         }
         if !valid_source_missing_filters(&self.source_missing_filters) {
             return Err("Invalid imported missing filter names".into());
+        }
+        let mut push_ids = BTreeSet::new();
+        if self.source_push_speed_overrides.len() > 32
+            || self.source_push_speed_overrides.iter().any(|change| {
+                change.hammerid == 0
+                    || !push_ids.insert(change.hammerid)
+                    || ![change.from_speed, change.to_speed]
+                        .into_iter()
+                        .all(|speed| speed.is_finite() && speed > 0.0 && speed <= 32_768.0)
+            })
+        {
+            return Err("Invalid imported push speed overrides".into());
         }
         if self
             .source_prestart_target
@@ -349,6 +373,8 @@ impl Sidecar {
             return Err("Installed BSP or timer data differs from the ranked map revision".into());
         }
         if (self.source_gravity_outputs && entry.min_source_rules == 0)
+            || (!self.source_push_speed_overrides.is_empty()
+                && entry.min_source_rules < SOURCE_RULES_PUSH_SPEED_OVERRIDES)
             || (!self.source_missing_filters.is_empty()
                 && entry.min_source_rules < SOURCE_RULES_NORMALIZED_OUTPUTS)
             || ((self.source_timed_triggers || self.source_landmark_teleports)
@@ -403,6 +429,7 @@ impl Sidecar {
         {
             return Err("Invalid imported max velocity".into());
         }
+        self.apply_push_speed_overrides(&mut course.zones, entities)?;
         let extended_names = source_rules >= SOURCE_RULES_PLAYER_FILTERS;
         add_player_outputs(&self, &mut course.zones, geometry, entities, extended_names)?;
         add_source_teleports(
@@ -633,6 +660,42 @@ impl Sidecar {
             tracks,
             bhop_regions,
         });
+        Ok(())
+    }
+
+    fn apply_push_speed_overrides(
+        &self,
+        zones: &mut [Zone],
+        entities: &[Entity<'_>],
+    ) -> Result<(), String> {
+        for change in &self.source_push_speed_overrides {
+            let id = change.hammerid;
+            let mut entities = entities.iter().enumerate().filter(|(_, entity)| {
+                entity.get("hammerid").and_then(|value| value.parse().ok()) == Some(id)
+            });
+            let (entity_index, entity) = entities
+                .next()
+                .ok_or_else(|| format!("Imported push {id} does not exist in the BSP"))?;
+            if entities.next().is_some() {
+                return Err(format!("Imported push {id} has a duplicate Hammer ID"));
+            }
+            let new_velocity = override_push_velocity(entity, change.from_speed, change.to_speed)
+                .ok_or_else(|| {
+                format!("Imported push {id} differs from the authored BSP trigger")
+            })?;
+            let mut matched = false;
+            for zone in zones.iter_mut() {
+                if let ZoneKind::Push { index, velocity } = &mut zone.kind
+                    && *index == entity_index
+                {
+                    *velocity = new_velocity;
+                    matched = true;
+                }
+            }
+            if !matched {
+                return Err(format!("Imported push {id} has no enabled player brush"));
+            }
+        }
         Ok(())
     }
 }

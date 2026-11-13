@@ -138,6 +138,30 @@ fn spawn_flags(entity: &Entity<'_>) -> u32 {
         .unwrap_or_default()
 }
 
+pub(super) fn override_push_velocity(
+    entity: &Entity<'_>,
+    from_speed: f32,
+    to_speed: f32,
+) -> Option<Vec3> {
+    if entity.get("classname") != Some("trigger_push")
+        || spawn_flags(entity) != TRIGGER_CLIENTS
+        || !entity.outputs.is_empty()
+        || entity
+            .get("parentname")
+            .is_some_and(|name| !name.is_empty())
+        || entity
+            .get("targetname")
+            .is_some_and(|name| !name.is_empty())
+        || entity
+            .get("alternateticksfix")
+            .is_some_and(|flag| flag != "0")
+        || entity.get("speed")?.parse::<f32>().ok()? != from_speed
+    {
+        return None;
+    }
+    Some(direction(entity, "pushdir")? * to_speed)
+}
+
 fn velocity(entity: &Entity<'_>, direction_key: &str) -> Option<Vec3> {
     let speed = entity.get("speed").unwrap_or("0").parse::<f32>().ok()?;
     if !speed.is_finite() {
