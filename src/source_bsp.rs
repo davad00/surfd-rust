@@ -246,6 +246,9 @@ fn load_file(
             Some(path),
             timer,
             load_visuals,
+            ranked.map_or(crate::catalog::SOURCE_MAP_RULES, |entry| {
+                entry.min_source_rules
+            }),
         )?;
         course.catalog_revision = revision;
         if course.map_triggers.source_timer.is_none() {
@@ -262,6 +265,7 @@ fn parse(
     map_path: Option<&Path>,
     timer: Option<timer::Sidecar>,
     load_visuals: bool,
+    source_rules: u8,
 ) -> Result<Course, String> {
     let file = BspFile::new(bytes)?;
     let geometry = Geometry::read(&file)?;
@@ -281,13 +285,15 @@ fn parse(
         "info_player_terrorist",
         "info_player_start",
         "info_player_deathmatch",
+        "info_player_teamspawn",
     ]
     .iter()
     .find_map(|class| {
         entities.iter().find_map(|entity| {
-            (entity.get("classname") == Some(*class))
-                .then(|| entity.origin().map(|origin| (origin, entity.yaw())))
-                .flatten()
+            (entity.get("classname") == Some(*class)
+                && (*class != "info_player_teamspawn" || entity.get("startdisabled") != Some("1")))
+            .then(|| entity.origin().map(|origin| (origin, entity.yaw())))
+            .flatten()
         })
     })
     .ok_or("The map has no usable player spawn")?;
@@ -395,7 +401,7 @@ fn parse(
         },
     };
     if let Some(timer) = timer {
-        timer.apply(&mut course, &geometry, &entities)?;
+        timer.apply(&mut course, &geometry, &entities, source_rules)?;
     }
     Ok(course)
 }
@@ -506,6 +512,11 @@ struct RawBrush {
     contents: i32,
 }
 
+struct BrushSide {
+    plane: usize,
+    bevel: bool,
+}
+
 struct Face {
     plane: usize,
     reversed: bool,
@@ -536,7 +547,7 @@ struct Geometry {
     leaf_brushes: Vec<usize>,
     models: Vec<Model>,
     brushes: Vec<RawBrush>,
-    sides: Vec<usize>,
+    sides: Vec<BrushSide>,
     vertices: Vec<Vec3>,
     edges: Vec<[usize; 2]>,
     face_edges: Vec<i32>,
@@ -588,8 +599,14 @@ impl Geometry {
             version => return Err(format!("Unsupported Source edge version {version}")),
         };
         let sides = match file.lump_version(BRUSH_SIDES) {
-            0 => file.records::<8, _>(BRUSH_SIDES, |row| u16_at(row, 0))?,
-            1 => file.records::<16, _>(BRUSH_SIDES, |row| u32_at(row, 0) as usize)?,
+            0 => file.records::<8, _>(BRUSH_SIDES, |row| BrushSide {
+                plane: u16_at(row, 0),
+                bevel: i16_at(row, 6) != 0,
+            })?,
+            1 => file.records::<16, _>(BRUSH_SIDES, |row| BrushSide {
+                plane: u32_at(row, 0) as usize,
+                bevel: row[12] != 0,
+            })?,
             version => return Err(format!("Unsupported Source brush side version {version}")),
         };
         let lightmap = |row: &[u8], offset| FaceLightmap {
@@ -697,10 +714,10 @@ impl Geometry {
                 brush.side_count,
                 "brush side",
             )?;
-            let planes = sides
-                .iter()
-                .map(|&side| lookup(&self.planes, side, "brush plane"));
-            brushes.push(brush_from_planes(planes, placement)?);
+            let planes = sides.iter().map(|side| {
+                lookup(&self.planes, side.plane, "brush plane").map(|plane| (plane, side.bevel))
+            });
+            brushes.push(brush_from_sides(planes, placement)?);
         }
         Ok(brushes)
     }
@@ -836,15 +853,16 @@ impl Placement {
     }
 }
 
-fn brush_from_planes<'a>(
-    source_planes: impl IntoIterator<Item = Result<&'a Plane, String>>,
+fn brush_from_sides<'a>(
+    source_planes: impl IntoIterator<Item = Result<(&'a Plane, bool), String>>,
     placement: Placement,
 ) -> Result<Brush, String> {
     let mut planes = Vec::new();
+    let mut bevels = Vec::new();
     let mut min = Vec3::splat(f32::NEG_INFINITY);
     let mut max = Vec3::splat(f32::INFINITY);
     for plane in source_planes {
-        let plane = plane?;
+        let (plane, bevel) = plane?;
         let length = plane.normal.length();
         if !length.is_finite() || length < 0.5 || !plane.distance.is_finite() {
             return Err("BSP brush contains an invalid plane".into());
@@ -864,10 +882,28 @@ fn brush_from_planes<'a>(
             normal,
             distance: distance + normal.dot(placement.translation),
         });
+        if bevel {
+            bevels.push(planes.len() - 1);
+        }
     }
     if !min.is_finite() || !max.is_finite() || !min.cmple(max).all() {
-        let (min, max) =
-            bounds_from_plane_intersections(&planes).ok_or("BSP brush is missing valid bounds")?;
+        let (min, max) = bounds_from_plane_intersections(&planes)
+            .or_else(|| {
+                if bevels.is_empty() {
+                    return None;
+                }
+                // These are compiler-generated hull planes. Use the physical
+                // sides for broad-phase bounds while retaining all trace planes.
+                let physical: Vec<_> = planes
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, &plane)| {
+                        bevels.binary_search(&index).is_err().then_some(plane)
+                    })
+                    .collect();
+                bounds_from_plane_intersections(&physical)
+            })
+            .ok_or("BSP brush is missing valid bounds")?;
         return Ok(Brush {
             planes: planes.into(),
             min,
@@ -888,7 +924,10 @@ fn brush_from_planes<'a>(
 }
 
 pub(crate) fn convex_brush(planes: &[Plane]) -> Result<Brush, String> {
-    brush_from_planes(planes.iter().map(Ok), Placement::IDENTITY)
+    brush_from_sides(
+        planes.iter().map(|plane| Ok((plane, false))),
+        Placement::IDENTITY,
+    )
 }
 
 fn bounds_from_plane_intersections(planes: &[Plane]) -> Option<(Vec3, Vec3)> {
@@ -1108,14 +1147,66 @@ mod tests {
                 distance: 1.0 / 3.0_f32.sqrt(),
             },
         ];
-        let brush = brush_from_planes(planes.iter().map(Ok), Placement::IDENTITY).unwrap();
+        let brush = convex_brush(&planes).unwrap();
         assert!(brush.min.distance(Vec3::splat(-0.03125)) < 0.00001);
         assert!(brush.max.distance(Vec3::splat(1.03125)) < 0.00001);
     }
 
     #[test]
+    fn uses_enabled_team_spawn_when_legacy_classes_are_absent() {
+        let mut bytes = fixture();
+        add_lump(
+            &mut bytes,
+            ENTITIES,
+            0,
+            br#"
+                { "classname" "worldspawn" }
+                { "classname" "info_player_teamspawn" "origin" "200 200 200" "StartDisabled" "1" }
+                { "classname" "info_player_teamspawn" "origin" "15 25 35" "angles" "0 90 0" }
+            "#,
+        );
+        let course = parse(&bytes, "fixture", None, None, false, 0).unwrap();
+        assert_eq!(course.spawn, Vec3::new(15.0, 35.0, -25.0));
+        assert_eq!(course.spawn_yaw, 0.0);
+    }
+
+    #[test]
+    fn bounds_recover_from_contradictory_auxiliary_bevel() {
+        let mut bytes = fixture();
+        let mut planes = BspFile::new(&bytes)
+            .unwrap()
+            .lump(PLANES)
+            .unwrap()
+            .into_owned();
+        let mut bevel = [0; 20];
+        put_vector(&mut bevel, 0, Vec3::X);
+        put(&mut bevel, 12, (-100.0_f32).to_le_bytes());
+        planes.extend_from_slice(&bevel);
+        add_lump(&mut bytes, PLANES, 0, &planes);
+        let mut sides = [0; 56];
+        for (index, plane) in [0_u16, 1, 2, 3, 4, 5, 6].into_iter().enumerate() {
+            put(&mut sides, index * 8, plane.to_le_bytes());
+        }
+        put(&mut sides, 6 * 8 + 6, 1_u16.to_le_bytes());
+        add_lump(&mut bytes, BRUSH_SIDES, 0, &sides);
+        let mut brushes = [0; 12];
+        put(&mut brushes, 4, 7_u32.to_le_bytes());
+        put(&mut brushes, 8, 1_u32.to_le_bytes());
+        add_lump(&mut bytes, BRUSHES, 0, &brushes);
+        let file = BspFile::new(&bytes).unwrap();
+        let geometry = Geometry::read(&file).unwrap();
+        let model = &geometry.models[0];
+        let brushes = geometry
+            .model_brushes(model, Placement::IDENTITY, true)
+            .unwrap();
+        assert_eq!(brushes[0].planes.len(), 7);
+        assert!(brushes[0].min.distance(Vec3::new(0.0, 0.0, -20.0)) < 0.06);
+        assert!(brushes[0].max.distance(Vec3::new(10.0, 30.0, 0.0)) < 0.06);
+    }
+
+    #[test]
     fn source_brushes_faces_and_teleports_share_the_same_axes() {
-        let course = parse(&fixture(), "fixture", None, None, true).unwrap();
+        let course = parse(&fixture(), "fixture", None, None, true, 0).unwrap();
         assert_eq!(course.spawn, Vec3::new(15.0, 35.0, -25.0));
         assert_eq!(course.spawn_yaw, 0.0);
         assert_eq!(course.brushes.len(), 1);
@@ -1142,7 +1233,9 @@ mod tests {
         let mut bytes = fixture();
         let entry = 8 + PLANES * 16;
         put(&mut bytes, entry, u32::MAX.to_le_bytes());
-        let error = parse(&bytes, "truncated", None, None, true).err().unwrap();
+        let error = parse(&bytes, "truncated", None, None, true, 0)
+            .err()
+            .unwrap();
         assert!(error.contains("invalid range"));
     }
 
@@ -1158,8 +1251,8 @@ mod tests {
                 { "classname" "info_player_counterterrorist" "origin" "15 25 35" }
             "#,
         );
-        let visible = parse(&bytes, "fixture", None, None, true).unwrap();
-        let collision = parse(&bytes, "fixture", None, None, false).unwrap();
+        let visible = parse(&bytes, "fixture", None, None, true, 0).unwrap();
+        let collision = parse(&bytes, "fixture", None, None, false, 0).unwrap();
         let face = &visible.surfaces[0];
         let material = face
             .texture
