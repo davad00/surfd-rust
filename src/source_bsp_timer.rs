@@ -102,6 +102,8 @@ pub(super) struct Sidecar {
     #[serde(default)]
     source_player_filters: bool,
     source_prestart_target: Option<String>,
+    #[serde(default)]
+    source_speedmod: bool,
     #[serde(skip)]
     revision: [u8; 32],
 }
@@ -298,6 +300,7 @@ impl Sidecar {
             || (self.source_player_filters && entry.min_source_rules < SOURCE_RULES_PLAYER_FILTERS)
             || ((self.source_movement.changes_defaults()
                 || self.source_prestart_target.is_some()
+                || self.source_speedmod
                 || self
                     .tracks
                     .iter()
@@ -836,6 +839,11 @@ fn add_player_outputs(
         return Err("Imported output fixes must use supported touch events".into());
     }
     let missing_filter_boosters = missing_filter_boosters(&timer.source_missing_filters, entities)?;
+    let speedmod = timer
+        .source_speedmod
+        .then(|| source_speedmod_target(entities))
+        .transpose()?;
+    let mut speedmod_count = 0;
     let mut matched = BTreeSet::new();
     let mut timed_count = 0;
     let mut name_count = 0;
@@ -875,6 +883,22 @@ fn add_player_outputs(
                 .collect(),
             on_trigger: None,
         };
+        let speedmod_touch = speedmod
+            .map(|target| source_speedmod_touch(entity, target))
+            .transpose()?
+            .flatten();
+        if let Some(scale) = speedmod_touch {
+            let action = |scale| PlayerOutput {
+                delay_ticks: 0,
+                value: PlayerOutputValue::LaggedMovement {
+                    scale,
+                    suppress_jump: true,
+                },
+            };
+            output.on_start.push(action(scale));
+            output.on_end.push(action(1.0));
+            speedmod_count += 1;
+        }
         let mut triggered = Vec::new();
         for &(mut key, value) in &entity.outputs {
             if timer.source_timed_triggers && key.eq_ignore_ascii_case("OnTrigger") {
@@ -995,7 +1019,9 @@ fn add_player_outputs(
             let model = lookup(&geometry.models, model, "output model")?;
             let brushes = geometry.model_brushes(model, entity.placement(), false)?;
             if brushes.is_empty()
-                && (missing_filter_boosters.contains(&index) || output.on_trigger.is_some())
+                && (missing_filter_boosters.contains(&index)
+                    || output.on_trigger.is_some()
+                    || speedmod_touch.is_some())
             {
                 return Err("Imported player output has no brush".into());
             }
@@ -1004,6 +1030,9 @@ fn add_player_outputs(
                 kind: ZoneKind::PlayerOutput(Box::new(output.clone())),
             }));
         }
+    }
+    if speedmod.is_some() && speedmod_count == 0 {
+        return Err("Imported Source speed modifier has no touch triggers".into());
     }
     if matched.len() != fixes.len() {
         return Err("An imported Stripper output fix did not match a supported BSP output".into());
@@ -1274,6 +1303,106 @@ fn touch_event(name: &str) -> Option<bool> {
     }
 }
 
+fn source_speedmod_target<'a>(entities: &'a [Entity<'_>]) -> Result<&'a str, String> {
+    let mut modifiers = entities
+        .iter()
+        .filter(|entity| entity.get("classname") == Some("player_speedmod"));
+    let target = modifiers
+        .next()
+        .ok_or("Imported Source speed modifier is missing")?;
+    let name = target
+        .get("targetname")
+        .filter(|name| literal_target_name(name, true))
+        .ok_or("Imported Source speed modifier needs a literal target name")?;
+    if modifiers.next().is_some()
+        || target.get("spawnflags") != Some("4")
+        || target
+            .get("parentname")
+            .is_some_and(|value| !value.is_empty())
+        || !target.outputs.is_empty()
+        || entities
+            .iter()
+            .filter(|entity| {
+                entity
+                    .get("targetname")
+                    .is_some_and(|value| value.eq_ignore_ascii_case(name))
+            })
+            .count()
+            != 1
+    {
+        return Err("Imported Source speed modifier must be a unique jump-only entity".into());
+    }
+    Ok(name)
+}
+
+fn source_speedmod_touch(entity: &Entity<'_>, target: &str) -> Result<Option<f32>, String> {
+    let mut start = None;
+    let mut end = false;
+    for &(event, value) in &entity.outputs {
+        let delimiter = if value.contains('\x1b') { '\x1b' } else { ',' };
+        let mut parts = value.split(delimiter);
+        let name = parts.next().unwrap_or_default().trim_ascii();
+        if !name.eq_ignore_ascii_case(target) {
+            if name.strip_suffix('*').is_some_and(|prefix| {
+                target
+                    .get(..prefix.len())
+                    .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+            }) {
+                return Err("Imported Source speed modifier cannot use a wildcard output".into());
+            }
+            continue;
+        }
+        let input = parts.next().unwrap_or_default();
+        let scale = parts.next().and_then(|scale| scale.parse::<f32>().ok());
+        let Some(scale) = scale.filter(|_| {
+            input.eq_ignore_ascii_case("ModifySpeed")
+                && parts.next() == Some("0")
+                && parts.next() == Some("-1")
+                && parts.next().is_none()
+        }) else {
+            return Err(
+                "Imported Source speed modifier needs immediate repeatable touch outputs".into(),
+            );
+        };
+        match touch_event(event) {
+            Some(true) if start.is_none() && (0.01..1.0).contains(&scale) => start = Some(scale),
+            Some(false) if !end && scale == 1.0 => end = true,
+            _ => {
+                return Err(
+                    "Imported Source speed modifier has an unsupported touch output".into(),
+                );
+            }
+        }
+    }
+    if start.is_none() && !end {
+        return Ok(None);
+    }
+    if start.is_none()
+        || !end
+        || entity.outputs.len() != 2
+        || entity.get("classname") != Some("trigger_multiple")
+        || !matches!(entity.get("spawnflags"), Some("1" | "5"))
+        || entity
+            .get("parentname")
+            .is_some_and(|value| !value.is_empty())
+        || entity
+            .get("targetname")
+            .is_some_and(|value| !value.is_empty())
+        || entity
+            .get("filtername")
+            .is_some_and(|value| !value.is_empty())
+        || entity
+            .get("startdisabled")
+            .is_some_and(|value| value != "0")
+        || entity.model_index().is_none_or(|model| model == 0)
+    {
+        return Err(
+            "Imported Source speed modifier requires paired static client touch outputs".into(),
+        );
+    }
+    Ok(start)
+}
+
 fn static_client_trigger(entity: &Entity<'_>) -> bool {
     // This subset only models an ordinary player touching a static brush.
     const CLIENTS: u32 = 1;
@@ -1403,6 +1532,41 @@ fn parse_gravity(raw: &str) -> Result<f32, String> {
 #[cfg(test)]
 mod player_output_tests {
     use super::*;
+
+    #[test]
+    fn source_speedmod_requires_static_jump_only_touch_pairs() {
+        let modifier =
+            r#"{ "classname" "player_speedmod" "targetname" "nojump" "spawnflags" "4" }"#;
+        let brush = r#"{
+            "classname" "trigger_multiple" "model" "*1" "spawnflags" "5"
+            "OnStartTouch" "nojump,ModifySpeed,.9999,0,-1"
+            "OnEndTouch" "NoJump,ModifySpeed,1,0,-1"
+        }"#;
+        let text = format!("{modifier} {brush}");
+        let entities = super::super::read_entities(&text).unwrap();
+        let target = source_speedmod_target(&entities).unwrap();
+        assert_eq!(source_speedmod_touch(&entities[0], target).unwrap(), None);
+        assert_eq!(
+            source_speedmod_touch(&entities[1], target).unwrap(),
+            Some(0.9999)
+        );
+        for (from, to) in [
+            (".9999,0,-1", ".9999,0.1,-1"),
+            ("ModifySpeed,1,0,-1", "ModifySpeed,0.9,0,-1"),
+            ("\"NoJump,ModifySpeed", "\"noj*,ModifySpeed"),
+            (
+                "\"model\" \"*1\"",
+                "\"model\" \"*1\" \"parentname\" \"mover\"",
+            ),
+            ("\"spawnflags\" \"5\"", "\"spawnflags\" \"4\""),
+        ] {
+            let invalid = brush.replace(from, to);
+            let entities = super::super::read_entities(&invalid).unwrap();
+            assert!(source_speedmod_touch(&entities[0], target).is_err());
+        }
+        let invalid = text.replace("\"spawnflags\" \"4\"", "\"spawnflags\" \"12\"");
+        assert!(source_speedmod_target(&super::super::read_entities(&invalid).unwrap()).is_err());
+    }
     use crate::source_bsp::read_entities;
 
     #[test]

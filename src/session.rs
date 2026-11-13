@@ -2526,6 +2526,56 @@ mod tests {
     }
 
     #[test]
+    fn imported_speedmod_suppresses_jump_and_restores_movement_after_leaving() {
+        use crate::course::{PlayerOutput, PlayerOutputZone};
+
+        let mut course = course(vec![Zone {
+            brush: Brush::box_at(Vec3::splat(-100.0), Vec3::splat(100.0)),
+            kind: ZoneKind::PlayerOutput(Box::new(PlayerOutputZone {
+                index: 0,
+                filter: None,
+                filter_multi: None,
+                on_start: vec![PlayerOutput {
+                    delay_ticks: 0,
+                    value: PlayerOutputValue::LaggedMovement {
+                        scale: 0.75,
+                        suppress_jump: true,
+                    },
+                }],
+                on_end: vec![PlayerOutput {
+                    delay_ticks: 0,
+                    value: PlayerOutputValue::LaggedMovement {
+                        scale: 1.0,
+                        suppress_jump: true,
+                    },
+                }],
+                on_touch: vec![],
+                on_trigger: None,
+            })),
+        }]);
+        course.spawn = Vec3::Y * 0.05;
+        course.brushes.push(Brush::box_at(
+            Vec3::new(-1000.0, -50.0, -1000.0),
+            Vec3::new(1000.0, 0.0, 1000.0),
+        ));
+        let mut session = Session::new(&course);
+        session.tick(&course, MoveInput::default());
+        assert_eq!(session.triggers.movement_scale, Some(0.75));
+        let jump = MoveInput {
+            jump: true,
+            ..Default::default()
+        };
+        session.tick(&course, jump);
+        assert!(session.player.grounded);
+        session.player.position.x = 200.0;
+        session.tick(&course, jump);
+        assert!(session.player.grounded);
+        assert_eq!(session.triggers.movement_scale, None);
+        session.tick(&course, jump);
+        assert!(session.player.velocity.y > 250.0);
+    }
+
+    #[test]
     fn restoring_a_saved_pose_enters_practice_without_rewriting_the_live_run() {
         let course = course(vec![
             zone(-8.0, 8.0, ZoneKind::Start),
