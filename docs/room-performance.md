@@ -156,6 +156,8 @@ The records service skips render-only BSP lumps when it needs collision and timi
 
 Collision brushes, triggers, and 900 movement ticks matched across eight tested maps. An isolated ARM records service saved six archived command runs at their expected times, including a Surf course with 18 stage records and all three 100 Hz Jaunts. Boards, profiles, replays, and save receipts persisted across restart. A second account submitting a copied trajectory with a camera-only change was rejected.
 
+The historical replay index took 11 seconds to build on an isolated copy of the records database on ARM. The process used 0.15 CPU seconds and peaked at 12.7 MiB sampled resident memory in that window. A separate HTTP test confirmed that the original owner could save the same trajectory again and a second account received HTTP 409. These tests did not include a full-room load.
+
 ## Desktop rendering checks
 
 Two held-frame tests per build at 1280×800 on Simpsons Source measured 79.8–93.2 FPS in v0.1.13 and 85.9–96.3 FPS in v0.1.14. The captured map crop matched pixel for pixel. Whole-process CPU time overlapped between builds, and these runs establish no whole-game CPU reduction.
