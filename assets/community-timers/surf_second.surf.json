@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "bsp_sha256": "ed28ff8dfea617c83c5c53e75c36131805d966aab028ac574a18b19376feb4fd",
+  "mode": "surf",
+  "timer": "shavit",
+  "tier": 3,
+  "max_velocity": 5000,
+  "tracks": [
+    {
+      "id": 0,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    },
+    {
+      "id": 1,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    }
+  ],
+  "zones": [
+    {
+      "kind": "start",
+      "track": 0,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "start_zone",
+      "hook_hammerid": 75360
+    },
+    {
+      "kind": "end",
+      "track": 0,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "end_zone",
+      "hook_hammerid": 33621
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 3,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "checkpoint_3",
+      "hook_hammerid": 33584
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 1,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "checkpoint_1",
+      "hook_hammerid": 33633
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 2,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "checkpoint_2",
+      "hook_hammerid": 33646
+    },
+    {
+      "kind": "start",
+      "track": 1,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "bonus1_start",
+      "hook_hammerid": 147255
+    },
+    {
+      "kind": "end",
+      "track": 1,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "bonus1_end",
+      "hook_hammerid": 147275
+    }
+  ],
+  "entity_output_fixes": []
+}

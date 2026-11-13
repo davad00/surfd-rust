@@ -1,0 +1,178 @@
+{
+  "version": 1,
+  "bsp_sha256": "00f35489dfc23aaece5d9754df7b80030e492b13c190a86829746120d0e6b5c3",
+  "mode": "surf",
+  "timer": "shavit",
+  "tier": 2,
+  "max_velocity": 5000,
+  "tracks": [
+    {
+      "id": 0,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    },
+    {
+      "id": 1,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    },
+    {
+      "id": 2,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    },
+    {
+      "id": 3,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    },
+    {
+      "id": 4,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    }
+  ],
+  "zones": [
+    {
+      "kind": "start",
+      "track": 0,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "mapstartzone",
+      "hook_hammerid": 161249
+    },
+    {
+      "kind": "end",
+      "track": 0,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "mapendzone",
+      "hook_hammerid": 220005
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 1,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "cp1",
+      "hook_hammerid": 243799
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 2,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "cp2",
+      "hook_hammerid": 243837
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 3,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "cp3",
+      "hook_hammerid": 247812
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 3,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "cp3",
+      "hook_hammerid": 247825
+    },
+    {
+      "kind": "start",
+      "track": 2,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "bonus2_startzone",
+      "hook_hammerid": 420615
+    },
+    {
+      "kind": "end",
+      "track": 2,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "bonus2_endzone",
+      "hook_hammerid": 420619
+    },
+    {
+      "kind": "start",
+      "track": 3,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "bonus3_startzone",
+      "hook_hammerid": 424276
+    },
+    {
+      "kind": "end",
+      "track": 3,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "bonus3_endzone",
+      "hook_hammerid": 424378
+    },
+    {
+      "kind": "start",
+      "track": 1,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "bonus1_startzone",
+      "hook_hammerid": 509604
+    },
+    {
+      "kind": "end",
+      "track": 1,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "bonus1_endzone",
+      "hook_hammerid": 516157
+    },
+    {
+      "kind": "end",
+      "track": 4,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "bonus4_endzone",
+      "hook_hammerid": 529777
+    },
+    {
+      "kind": "start",
+      "track": 4,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "bonus4_startzone",
+      "hook_hammerid": 530045
+    }
+  ],
+  "entity_output_fixes": []
+}

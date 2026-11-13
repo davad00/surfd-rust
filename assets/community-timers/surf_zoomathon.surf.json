@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "bsp_sha256": "d8b6218289bf7440156e2e68ab84832f21657d40dfdb4d0e33d708a29da92e52",
+  "mode": "surf",
+  "timer": "shavit",
+  "tier": 1,
+  "max_velocity": 5000,
+  "tracks": [
+    {
+      "id": 0,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": false,
+      "limit_start_ground_speed": false
+    }
+  ],
+  "zones": [
+    {
+      "kind": "start",
+      "track": 0,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "startzone",
+      "hook_hammerid": 36250
+    },
+    {
+      "kind": "end",
+      "track": 0,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "endzone",
+      "hook_hammerid": 36224
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 1,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "checkpoint1",
+      "hook_hammerid": 38170
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 2,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "checkpoint2",
+      "hook_hammerid": 38303
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 3,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "checkpoint3",
+      "hook_hammerid": 38317
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 4,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "checkpoint4",
+      "hook_hammerid": 38330
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 5,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "checkpoint5",
+      "hook_hammerid": 38344
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 6,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "checkpoint6",
+      "hook_hammerid": 38356
+    },
+    {
+      "kind": "checkpoint",
+      "track": 0,
+      "index": 7,
+      "points": [],
+      "bottom": 0,
+      "height": 0,
+      "hook_target": "checkpoint7",
+      "hook_hammerid": 38372
+    }
+  ],
+  "entity_output_fixes": []
+}
