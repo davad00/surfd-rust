@@ -6376,6 +6376,28 @@
           "spawnTargets": {}
         }
       }
+    },
+    {
+      "id": "surf_simpsons_source",
+      "slug": "surf_simpsons_source",
+      "name": "Simpsons Source",
+      "author": "The-Goose & ZoomJ, original map by Rinkon",
+      "mode": "surf",
+      "tier": 2,
+      "type": "staged",
+      "bonuses": 0,
+      "minSourceRules": 5,
+      "sourceBsp": {
+        "bspSha256": "1a9e5de8afe72bdebb74ddf3bc8499abbb5c4ae6998474e20cbd5a2a6bef8dfe",
+        "timerSha256": "123fba1526daa60e6b921b3ddd450a7fed77c02b2820964b672205402c8a1e64"
+      },
+      "download": {
+        "bspUrl": "https://main.fastdl.me/maps/7984c0d7f5ebdf1c00b0ec19384059468181f809.bsp.bz2",
+        "timerUrl": "https://raw.githubusercontent.com/davad00/surfd-rust/ac6032ed36e3f75c051d43fc4576935e6652c53a/assets/community-timers/cksurftimer/surf_simpsons_source.surf.json",
+        "compression": "bzip2",
+        "stages": 10,
+        "checkpoints": 9
+      }
     }
   ]
 }

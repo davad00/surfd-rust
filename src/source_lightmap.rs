@@ -8,6 +8,9 @@ const PAGE_SIZE: usize = 1024;
 const PADDING: usize = 2;
 const MAX_PAGES: usize = 32;
 
+static EXPONENT_SCALE: std::sync::LazyLock<[f32; 256]> =
+    std::sync::LazyLock::new(|| std::array::from_fn(|index| 2.0_f32.powi(i32::from(index as i8))));
+
 #[derive(Clone, Copy)]
 pub(crate) struct FaceLightmap {
     pub offset: i32,
@@ -51,6 +54,7 @@ impl Page {
             return None;
         }
 
+        let exponent_scale = &*EXPONENT_SCALE;
         for y in 0..padded_height {
             let sy = y.saturating_sub(PADDING).min(height - 1);
             for x in 0..padded_width {
@@ -59,7 +63,7 @@ impl Page {
                 let target = 4 * ((self.y + y) * PAGE_SIZE + self.x + x);
                 let sample = &rgb_exp[source..source + 4];
                 // ColorRGBExp32 encodes a linear channel as byte * 2^exponent / 255.
-                let scale = 2.0_f32.powi(i32::from(sample[3] as i8));
+                let scale = exponent_scale[usize::from(sample[3])];
                 for (output, input) in self.pixels[target..target + 3].iter_mut().zip(sample) {
                     *output = (f32::from(*input) * scale).round() as u8;
                 }
