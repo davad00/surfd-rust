@@ -14,6 +14,10 @@ The following timer sidecars use the authored zones and configurations from [wrl
 
 The desktop fetches the original BSPs from [FastDL](https://fastdl.me/#questions). These sidecars contain timing data only.
 
+## Simpsons Source
+
+The desktop Practice course uses the ten-stage main route from [SurfTimer's published zone and tier tables](https://github.com/surftimer/SurfTimer/tree/b9c860942b8a55b7e36c244264f53c4e6d13a32b/scripts/mysql-files). The original Counter-Strike: Source BSP is pinned by hash. The [source rows and GPLv3 license](cksurftimer) accompany the derived timer. The map has an independent 3,500-unit per-axis cap and a 350-unit start-speed cap. The original timer plugin applies its start-speed policy differently, so this route is available in Practice under the desktop movement profile.
+
 ## Counter-Strike: Source Surf course credits
 
 The four wrldspawn timers use the Unlicense course data. The other timers reference each map author's compiled timer brushes directly, with published tiers and named authors from KSF. KSF lists 0 for some speed caps, which indicates an unspecified per-map override. The documented native 5,000-unit per-axis cap applies on those maps. This is the desktop ranked ruleset.

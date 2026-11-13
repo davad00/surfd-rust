@@ -1,0 +1,20 @@
+{
+  "map": "surf_simpsons_source",
+  "creator": "https://gamebanana.com/mods/122938",
+  "tier": "https://ksf.surf/maps/surf_simpsons_source",
+  "reference_layout": "https://emarica-css-surf.ru/map.php?map=surf_simpsons_source",
+  "timer_data": "https://raw.githubusercontent.com/surftimer/SurfTimer/b9c860942b8a55b7e36c244264f53c4e6d13a32b/scripts/mysql-files/ck_zones.sql",
+  "tier_data": "https://raw.githubusercontent.com/surftimer/SurfTimer/b9c860942b8a55b7e36c244264f53c4e6d13a32b/scripts/mysql-files/ck_maptier.sql",
+  "timer_data_license": "GPL-3.0",
+  "changes": [
+    "The start floor bound is rounded from -189.983 to -190.0 for the original CSS spawn's one-unit native tolerance. All stage and end bounds match the published ckSurf data exactly.",
+    "Stage 2 and 10 practice destination selectors are omitted because their original CSS landing targets lie outside their timer bounds. All nine timer transitions are retained.",
+    "Main uses the native start-speed policy and per-map 3500 max velocity from published ckSurf table.",
+    "Authored CSS gravity and destination entities are retained. The recorded KSF stage 10 landing and the published CS:GO companion Stripper destination differ from the authored CSS destination.",
+    "The published start-speed cap of 350 is set explicitly. Native Practice applies it at start exit. The historical CK plugin applies the cap on zone entry and can maintain it over a jump."
+  ],
+  "board": "Unranked desktop Practice, independent ckSurf main course, 10 stages",
+  "sha1": "7984c0d7f5ebdf1c00b0ec19384059468181f809",
+  "bspHash": "1a9e5de8afe72bdebb74ddf3bc8499abbb5c4ae6998474e20cbd5a2a6bef8dfe",
+  "timerHash": "123fba1526daa60e6b921b3ddd450a7fed77c02b2820964b672205402c8a1e64"
+}
