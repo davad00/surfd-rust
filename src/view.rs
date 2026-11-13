@@ -12,7 +12,7 @@ use bevy::winit::{UpdateMode, WinitSettings};
 use bevy_surf::{
     course::Course,
     look::{CursorMotion, SourceLook},
-    movement::{MoveInput, TICK_HZ, TICK_SECONDS, native_yaw_to_source},
+    movement::{MoveInput, native_yaw_to_source},
     reference_ghost::{ReferenceGhost, ReferenceReplayFrame},
     replay::{NativeGhost, NativeGhostPreparation, Playback, ReplayError, RunReplay, TickCommand},
     session::{RunOptions, RunPhase, Session},
@@ -134,8 +134,8 @@ impl ReferencePlayback {
         true
     }
 
-    fn advance(&mut self) -> bool {
-        self.accumulator += 1.0 / TICK_HZ;
+    fn advance(&mut self, seconds: f64) -> bool {
+        self.accumulator += seconds;
         while self.accumulator >= self.track.tick_seconds() {
             self.accumulator -= self.track.tick_seconds();
             if !self.seek(self.cursor + 1) {
@@ -179,6 +179,10 @@ pub struct Game {
 }
 
 impl Game {
+    fn tick_duration(&self) -> Duration {
+        Duration::from_millis(u64::from(self.session.tick_interval().millis()))
+    }
+
     fn start_replay(&mut self, replay: StartupReplay) -> Result<(), String> {
         match replay {
             StartupReplay::Native(replay) => self.play_replay(replay, false),
@@ -846,6 +850,7 @@ pub fn run(
     #[cfg(windows)]
     let plugins = render_compat::configure(plugins);
     let mut app = App::new();
+    let timestep = game.tick_duration();
     app.insert_resource(game)
         .insert_resource(menu)
         .insert_resource(library)
@@ -866,7 +871,7 @@ pub fn run(
             }
         })
         .add_message::<menu::MenuRequest>()
-        .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
+        .insert_resource(Time::<Fixed>::from_duration(timestep))
         .insert_resource(ClearColor(BACKGROUND))
         .insert_resource(GlobalAmbientLight {
             brightness: 0.0,
@@ -1209,8 +1214,9 @@ pub(super) fn advance(mut game: ResMut<Game>, mut menu: ResMut<MenuState>, onlin
     if game.drill_result().is_some() {
         return;
     }
+    let tick_seconds = f64::from(game.session.tick_interval().seconds());
     if let Some(playback) = &mut game.reference_playback {
-        if !game.replay_paused && !playback.advance() {
+        if !game.replay_paused && !playback.advance(tick_seconds) {
             game.replay_paused = true;
         }
         return;
@@ -1224,7 +1230,7 @@ pub(super) fn advance(mut game: ResMut<Game>, mut menu: ResMut<MenuState>, onlin
     let position = game.session.player.position;
     let phase = game.session.phase;
     game.previous_eye = game.eye();
-    game.look.turn(game.turn_rate * f64::from(TICK_SECONDS));
+    game.look.turn(game.turn_rate * tick_seconds);
     let (yaw, pitch) = game.look.native();
     let mut input = game.input;
     input.yaw = yaw;
@@ -1356,6 +1362,7 @@ fn update_camera(
 pub(super) fn poll_load(
     mut game: ResMut<Game>,
     mut menu: ResMut<MenuState>,
+    mut fixed: ResMut<Time<Fixed>>,
     mut benchmark: Option<ResMut<FrameBenchmark>>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -1370,6 +1377,7 @@ pub(super) fn poll_load(
                             bench.record_map(&course.course);
                         }
                         game.replace(*course, &menu.settings);
+                        sync_course_timestep(&mut fixed, game.tick_duration());
                         if let Some(bench) = benchmark.as_deref_mut()
                             && let Some(replay) = bench.replay.take()
                         {
@@ -1403,9 +1411,31 @@ pub(super) fn poll_load(
     }
 }
 
+fn sync_course_timestep(fixed: &mut Time<Fixed>, timestep: Duration) {
+    if fixed.timestep() != timestep {
+        fixed.discard_overstep(fixed.overstep());
+        fixed.set_timestep(timestep);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_timestep_switch_discards_only_the_previous_courses_remainder() {
+        let legacy = Game::new(Course::practice()).tick_duration();
+        let source = Duration::from_millis(10);
+        let mut fixed = Time::<Fixed>::from_duration(legacy);
+        fixed.accumulate_overstep(Duration::from_millis(12));
+        sync_course_timestep(&mut fixed, legacy);
+        assert_eq!(fixed.overstep(), Duration::from_millis(12));
+        sync_course_timestep(&mut fixed, source);
+        assert_eq!(fixed.timestep(), source);
+        assert_eq!(fixed.overstep(), Duration::ZERO);
+        sync_course_timestep(&mut fixed, legacy);
+        assert_eq!(fixed.timestep(), Duration::from_millis(15));
+    }
 
     #[test]
     fn spectator_camera_uses_transmitted_eye_height_with_legacy_stance_fallback() {

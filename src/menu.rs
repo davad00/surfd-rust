@@ -3849,6 +3849,7 @@ mod tests {
             .init_resource::<AccumulatedMouseScroll>()
             .init_resource::<Online>()
             .init_resource::<Time>()
+            .init_resource::<Time<Fixed>>()
             .insert_resource(Game::new(Course::practice()))
             .insert_resource(MenuState::new(data))
             .insert_resource(library)
