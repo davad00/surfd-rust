@@ -4,13 +4,14 @@ The room server relays movement snapshots at a target of 20 Hz. The desktop runs
 
 ## Public rooms
 
-The public directory offers 88 slots across three rooms. The catalog currently has maps through T7.
+The public directory offers 96 slots across four rooms. The Surf catalog currently has maps through T7. The Bhop rotation requires the Windows v0.1.14 client or later.
 
 | Slots | Rotation | Maps in rotation |
 | ---: | --- | ---: |
-| 64 | T1–T2 | 52 |
-| 16 | T3–T5 | 11 |
-| 8 | T6+ | 8 |
+| 64 | Surf T1–T2 | 68 |
+| 16 | Surf T3–T5 | 15 |
+| 8 | Surf T6+ | 10 |
+| 8 | Bhop | 97 |
 
 ## How we measured
 
