@@ -25,12 +25,6 @@ const CROUCH_SHIFT: f32 = (STAND_HEIGHT - CROUCH_HEIGHT) / 2.0;
 const CROUCH_SECONDS: f32 = 0.4;
 const UNCROUCH_SECONDS: f32 = 0.2;
 
-const GRAVITY: f32 = 800.0;
-pub(crate) const HALF_GRAVITY_STEP: f32 = GRAVITY * TICK_SECONDS * 0.5;
-const AIR_ACCELERATION: f32 = 150.0;
-const GROUND_ACCELERATION: f32 = 5.0;
-const GROUND_FRICTION: f32 = 4.0;
-const STOP_SPEED: f32 = 75.0;
 pub(crate) const RUN_SPEED: f32 = 260.0;
 const AIR_WISH_CAP: f32 = 30.0;
 const JUMP_IMPULSE: f32 = 301.99338;
@@ -107,9 +101,9 @@ impl Player {
         self.crouch_fraction = 0.0;
     }
 
-    pub(crate) fn at_stage_restart(position: Vec3) -> Self {
+    pub(crate) fn at_stage_restart(position: Vec3, rules: MovementRules) -> Self {
         Self {
-            velocity: Vec3::NEG_Y * HALF_GRAVITY_STEP,
+            velocity: Vec3::NEG_Y * rules.half_gravity_step(),
             needs_ground_probe: false,
             ..Self::new(position)
         }
@@ -362,7 +356,7 @@ pub(crate) fn step_with_index(
     } else {
         rules.gravity_scale.unwrap_or(1.0)
     };
-    let half_gravity = (GRAVITY * gravity_scale) * dt * 0.5;
+    let half_gravity = (rules.movement.gravity * gravity_scale) * dt * 0.5;
     if !rules.water_hulls.is_empty()
         && volumes::water_tick(
             player,
@@ -395,8 +389,8 @@ pub(crate) fn step_with_index(
         let velocity = player.velocity.as_dvec3();
         let speed = velocity.x.hypot(velocity.z);
         if speed >= 0.1 {
-            let drop = speed.max(f64::from(STOP_SPEED))
-                * f64::from(GROUND_FRICTION)
+            let drop = speed.max(f64::from(rules.movement.stop_speed))
+                * f64::from(rules.movement.ground_friction)
                 * f64::from(player.surface_friction)
                 * f64::from(dt);
             player.velocity = (velocity * ((speed - drop).max(0.0) / speed)).as_vec3();
@@ -406,9 +400,12 @@ pub(crate) fn step_with_index(
     let (direction, wish_speed) =
         wish_direction(player, input, rules.recorded_yaw, rules.recorded_axes);
     let (target_speed, acceleration) = if player.grounded {
-        (wish_speed, GROUND_ACCELERATION)
+        (wish_speed, rules.movement.ground_acceleration)
     } else {
-        (wish_speed.min(AIR_WISH_CAP), AIR_ACCELERATION)
+        (
+            wish_speed.min(AIR_WISH_CAP),
+            rules.movement.air_acceleration,
+        )
     };
     let direction = direction.as_dvec3();
     let velocity = player.velocity.as_dvec3();
@@ -1214,6 +1211,75 @@ fn trace_brush(
 mod tests {
     use super::*;
     use crate::course::Plane;
+
+    #[test]
+    fn map_scalar_settings_affect_air_gravity_and_ground_friction() {
+        let mut player = Player::new(Vec3::Y * 200.0);
+        let mut candidates = Vec::new();
+        step_with_index(
+            &mut player,
+            MoveInput {
+                forward: 1.0,
+                ..Default::default()
+            },
+            &[],
+            None,
+            &mut candidates,
+            StepRules {
+                movement: MovementRules {
+                    gravity: 400.0,
+                    air_acceleration: 2.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        assert!((player.velocity.y + 6.0).abs() < 0.0001);
+        assert!((player.velocity.z.abs() - 7.8).abs() < 0.0001);
+        assert!(
+            (Player::at_stage_restart(
+                Vec3::ZERO,
+                MovementRules {
+                    gravity: 400.0,
+                    ..Default::default()
+                }
+            )
+            .velocity
+            .y + 3.0)
+                .abs()
+                < 0.0001
+        );
+
+        let floor = [box_brush(
+            Vec3::new(-1000.0, -64.0, -1000.0),
+            Vec3::new(1000.0, 0.0, 1000.0),
+        )];
+        let ground_rules = MovementRules {
+            ground_friction: 8.0,
+            stop_speed: 100.0,
+            ground_acceleration: 0.0,
+            ..Default::default()
+        };
+        let mut grounded = Player::new(Vec3::Y * 0.03125);
+        grounded.velocity.x = 50.0;
+        step_with_index(
+            &mut grounded,
+            MoveInput {
+                forward: 1.0,
+                ..Default::default()
+            },
+            &floor,
+            None,
+            &mut candidates,
+            StepRules {
+                movement: ground_rules,
+                ..Default::default()
+            },
+        );
+        assert!(grounded.grounded);
+        assert!((grounded.velocity.x - 38.0).abs() < 0.0001);
+        assert_eq!(grounded.velocity.z, 0.0);
+    }
 
     fn box_brush(min: Vec3, max: Vec3) -> Brush {
         Brush {

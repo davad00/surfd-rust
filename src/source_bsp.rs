@@ -1128,6 +1128,75 @@ mod tests {
     use crate::course::ZoneKind;
 
     #[test]
+    fn source_settings_require_the_pinned_timer_and_supported_rules() {
+        use crate::{catalog::SOURCE_RULES_MOVEMENT_SETTINGS, rules::MovementRules};
+        use sha2::{Digest, Sha256};
+        use std::fs;
+
+        let directory =
+            std::env::temp_dir().join(format!("surfd-physics-pin-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("bhop_physics_fixture.bsp");
+        let mut bsp = fixture();
+        add_lump(
+            &mut bsp,
+            ENTITIES,
+            0,
+            br#"
+            { "classname" "worldspawn" }
+            { "classname" "info_player_counterterrorist" "origin" "15 25 35" "angles" "0 90 0" }
+        "#,
+        );
+        let bsp_hash = format!("{:x}", Sha256::digest(&bsp));
+        let mut doc = serde_json::json!({
+            "version": 1,
+            "bsp_sha256": bsp_hash,
+            "mode": "bhop",
+            "timer": "shavit",
+            "tracks": [{
+                "id": 0,
+                "checkpoints_required": false,
+                "checkpoints_ordered": true,
+                "bhop_enabled": true,
+                "limit_start_ground_speed": false
+            }],
+            "zones": [
+                {"kind":"start", "points":[[10,20],[20,20],[20,30],[10,30]], "bottom":30,"height":20},
+                {"kind":"end", "points":[[100,100],[200,100],[200,200],[100,200]], "bottom":30,"height":20}
+            ]
+        });
+        let mut entry = crate::catalog::find("bhop_easy").unwrap().clone();
+        entry.id = "bhop_physics_fixture".into();
+        entry.download = None;
+        entry.min_source_rules = 0;
+        entry.source_bsp.as_mut().unwrap().bsp_sha256 = bsp_hash;
+        let timer_path = sidecar_path(&path, "surf.json");
+        fs::write(&path, bsp).unwrap();
+        let install_timer = |doc: &serde_json::Value| {
+            let timer = serde_json::to_vec(doc).unwrap();
+            fs::write(&timer_path, &timer).unwrap();
+            format!("{:x}", Sha256::digest(&timer))
+        };
+        entry.source_bsp.as_mut().unwrap().timer_sha256 = install_timer(&doc);
+        let legacy = load_ranked_collision(&path, &entry).unwrap();
+        let legacy_board = legacy.board_revision(None).unwrap();
+        assert_eq!(MovementRules::for_course(&legacy), MovementRules::default());
+        doc["source_movement"] = serde_json::json!({"gravity":400,"air_acceleration":2});
+        let changed_pin = install_timer(&doc);
+        assert!(load_ranked_collision(&path, &entry).is_err());
+        entry.source_bsp.as_mut().unwrap().timer_sha256 = changed_pin;
+        assert!(load_ranked_collision(&path, &entry).is_err());
+        entry.min_source_rules = SOURCE_RULES_MOVEMENT_SETTINGS;
+        let changed = load_ranked_collision(&path, &entry).unwrap();
+        assert_ne!(changed.board_revision(None).unwrap(), legacy_board);
+        assert_eq!(MovementRules::for_course(&changed).gravity, 400.0);
+        assert_eq!(MovementRules::for_course(&changed).air_acceleration, 2.0);
+        fs::remove_file(&path).unwrap();
+        fs::remove_file(&timer_path).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
     fn derives_bounds_when_a_brush_has_no_axial_bevels() {
         let planes = [
             Plane {

@@ -301,15 +301,17 @@ fn water_accelerate(
     let speed = rounded_length(player.velocity);
     let mut remaining = 0.0;
     if speed != 0.0 {
-        remaining = speed - (((dt * speed) * GROUND_FRICTION) * player.surface_friction);
+        remaining =
+            speed - (((dt * speed) * rules.movement.ground_friction) * player.surface_friction);
         if remaining < 0.1 {
             remaining = 0.0;
         }
         player.velocity *= remaining / speed;
     }
     if wish_speed >= 0.1 && wish_speed > remaining {
-        let gain = (wish_speed - remaining)
-            .min(((GROUND_ACCELERATION * wish_speed) * dt) * player.surface_friction);
+        let gain = (wish_speed - remaining).min(
+            ((rules.movement.ground_acceleration * wish_speed) * dt) * player.surface_friction,
+        );
         player.velocity += normalized(wish, rounded_length(wish)) * gain;
     }
 }

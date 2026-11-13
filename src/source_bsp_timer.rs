@@ -11,8 +11,8 @@ use sha2::{Digest, Sha256};
 
 use super::{Entity, Geometry, lookup, parse_vector, sidecar_path, source_axes};
 use crate::catalog::{
-    CatalogEntry, MapMode, SOURCE_RULES_NORMALIZED_OUTPUTS, SOURCE_RULES_PLAYER_FILTERS,
-    SOURCE_RULES_TIMED_TRIGGERS, valid_source_missing_filters,
+    CatalogEntry, MapMode, SOURCE_RULES_MOVEMENT_SETTINGS, SOURCE_RULES_NORMALIZED_OUTPUTS,
+    SOURCE_RULES_PLAYER_FILTERS, SOURCE_RULES_TIMED_TRIGGERS, valid_source_missing_filters,
 };
 use crate::course::{
     BonusRoute, Brush, Course, Plane, PlayerOutput, PlayerOutputValue, PlayerOutputZone,
@@ -20,6 +20,7 @@ use crate::course::{
     ZoneKind,
 };
 use crate::movement::TICK_HZ;
+use crate::rules::SourceMovementSettings;
 
 const MAX_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -33,6 +34,7 @@ enum Timer {
 pub(crate) struct SourceTimer {
     pub(crate) revision: [u8; 32],
     pub(crate) max_velocity: Option<f32>,
+    pub(crate) movement_settings: SourceMovementSettings,
     mode: MapMode,
     tracks: BTreeMap<u16, Track>,
     bhop_regions: Vec<(Option<u16>, Brush)>,
@@ -83,6 +85,8 @@ pub(super) struct Sidecar {
     mode: MapMode,
     tier: Option<u8>,
     max_velocity: Option<f32>,
+    #[serde(default)]
+    source_movement: SourceMovementSettings,
     tracks: Vec<Track>,
     zones: Vec<Region>,
     #[serde(default)]
@@ -167,6 +171,7 @@ impl Sidecar {
             stages: BTreeSet<u16>,
         }
 
+        self.source_movement.validate()?;
         if self.version != 1 {
             return Err(format!("Unsupported timer data version {}", self.version));
         }
@@ -274,6 +279,8 @@ impl Sidecar {
             || ((self.source_timed_triggers || self.source_landmark_teleports)
                 && entry.min_source_rules < SOURCE_RULES_TIMED_TRIGGERS)
             || (self.source_player_filters && entry.min_source_rules < SOURCE_RULES_PLAYER_FILTERS)
+            || (self.source_movement.changes_defaults()
+                && entry.min_source_rules < SOURCE_RULES_MOVEMENT_SETTINGS)
             || entry
                 .download
                 .as_ref()
@@ -508,6 +515,7 @@ impl Sidecar {
         }
         course.map_triggers.source_timer = Some(SourceTimer {
             revision: self.revision,
+            movement_settings: self.source_movement,
             max_velocity: self.max_velocity.or_else(|| {
                 matches!((self.timer, self.mode), (Timer::Momentum, MapMode::Surf))
                     .then_some(3500.0)

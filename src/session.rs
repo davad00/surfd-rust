@@ -13,8 +13,8 @@ use crate::{
         PlayerOutputValue, PracticeSpawn, Zone, ZoneKind,
     },
     movement::{
-        GroundCheck, HALF_GRAVITY_STEP, MoveInput, MovementSegment, Player, RUN_SPEED, StepRules,
-        TICK_HZ, step_with_index,
+        GroundCheck, MoveInput, MovementSegment, Player, RUN_SPEED, StepRules, TICK_HZ,
+        step_with_index,
     },
     replay::{MAX_COMMANDS, REPLAY_VERSION, RunReplay, TickCommand},
     rules::{MovementRules, PhysicsProfile},
@@ -609,7 +609,7 @@ impl Session {
             stage_start_recovery: stage == 1,
             ..TriggerState::default()
         };
-        self.player = Player::at_stage_restart(spawn.position);
+        self.player = Player::at_stage_restart(spawn.position, self.rules);
         self.mark_pose_discontinuity();
         self.start_jumps = 0;
         self.start_ground_time = 0.0;
@@ -702,7 +702,7 @@ impl Session {
             self.start_region = None;
             self.player.position = handoff.position;
             self.mark_pose_discontinuity();
-            self.player.velocity = Vec3::NEG_Y * HALF_GRAVITY_STEP;
+            self.player.velocity = Vec3::NEG_Y * self.rules.half_gravity_step();
             self.player.detach_ground();
             if course.map_triggers.stage_handoff_releases_duck && !input.crouch {
                 self.player.release_crouch();
@@ -1075,8 +1075,8 @@ impl Session {
                             let horizontal_push = push.unwrap_or_default().with_y(0.0);
                             self.player.velocity = (movement.pre_collision_velocity
                                 - horizontal_push
-                                - Vec3::Y * HALF_GRAVITY_STEP)
-                                .clamp(-limit, limit);
+                                - Vec3::Y * self.rules.half_gravity_step())
+                            .clamp(-limit, limit);
                         }
                         self.triggers.last_map_teleport = Some(self.triggers.tick);
                         if bonus.is_some() && teleport.carry_push {
@@ -1101,7 +1101,7 @@ impl Session {
                             self.player.velocity = Vec3::ZERO;
                         }
                         if teleport.stage_velocity {
-                            self.player.velocity = Vec3::NEG_Y * HALF_GRAVITY_STEP;
+                            self.player.velocity = Vec3::NEG_Y * self.rules.half_gravity_step();
                         }
                         if let Some(stage) = teleport.stage {
                             self.triggers.stage = stage;
@@ -2621,7 +2621,10 @@ mod tests {
         assert_eq!(session.pitch_override(), Some(-0.4));
         assert_eq!(session.source_yaw_override(), Some(204.591559026));
         assert_eq!(session.player.position, destination);
-        assert_eq!(session.player.velocity, Vec3::NEG_Y * HALF_GRAVITY_STEP);
+        assert_eq!(
+            session.player.velocity,
+            Vec3::NEG_Y * MovementRules::default().half_gravity_step()
+        );
         assert_eq!(session.triggers.stage, 2);
         assert_eq!(session.stage_progress(&course), Some((2, 2)));
         assert!(session.elapsed > elapsed);
