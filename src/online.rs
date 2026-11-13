@@ -728,9 +728,9 @@ impl Online {
         self.remote_poses.sample(now_ms);
     }
 
-    pub(crate) fn room_map_time(&self, now: Instant) -> Option<String> {
+    pub(crate) fn room_map_time(&self, now: Instant) -> Option<network::MapTimeLabel> {
         self.room_map_deadline
-            .map(|deadline| network::map_time_label(deadline.saturating_duration_since(now)))
+            .map(|deadline| network::MapTimeLabel(deadline.saturating_duration_since(now)))
     }
 
     pub(crate) fn active_vote(&self, now: Instant) -> Option<(&VoteInfo, u64)> {

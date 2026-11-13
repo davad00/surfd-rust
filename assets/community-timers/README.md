@@ -42,6 +42,20 @@ Jaunt 3, 4, and 6 by Curly use their original Tier 1 main routes with a 10 ms mo
 
 Lavaflow by Kiiru is a Tier 2 linear course with two checkpoints. The desktop downloads the exact map from the original Workshop listing. Its file size and checksum match the published timer archive. Practice uses air acceleration of 150, ground acceleration of 10, friction of 5.2, a 3,500-unit per-axis cap, and a 260-unit start-speed limit. The historical server tickrate and timer's exact prespeed behavior still need verification. [Workshop release](https://steamcommunity.com/sharedfiles/filedetails/?id=465027021) · [Timer archive](https://github.com/Sayt123/SurfZones/tree/78b5d079f0534eeb464ad1cdf8137a65713522d9)
 
+## Additional Counter-Strike: Global Offensive Practice routes
+
+These Workshop downloads match the BSP sizes and MD5 checksums published by the [SurfZones archive](https://github.com/Sayt123/SurfZones/tree/78b5d079f0534eeb464ad1cdf8137a65713522d9). The client also checks SHA-256 before loading them. Practice uses a 15 ms step, air acceleration 150, ground acceleration 10, friction 5.2, and a 3,500-unit per-axis cap. Exact historical server timing and one-jump prespeed behavior remain unverified.
+
+| Course | Tier | Main checkpoints | Bonuses | Practice start-speed limit |
+| --- | ---: | ---: | ---: | ---: |
+| [Greensway](https://steamcommunity.com/sharedfiles/filedetails/?id=2129923400) | 2 | 2 | 0 | 350 |
+| [Satellite Fix](https://steamcommunity.com/sharedfiles/filedetails/?id=1637463610) | 1 | 2 | 0 | 260 |
+| [Tranquil](https://steamcommunity.com/sharedfiles/filedetails/?id=2183939813) | 2 | 3 | 3 | 350 |
+
+Satellite Fix uses the BSP's authored gravity outputs. Tranquil uses the authored bonus spawns and preserves both main finish zones. Each entry has a separate ID from its Counter-Strike: Source counterpart.
+
+Across these three maps, 375 posted SurfHeaven times fall within the display's rounding tolerance of a 64 Hz clock. The records do not identify the BSP by checksum or expose command replays. The 64 Hz inference applies to those boards, and the Practice settings use the native 15 ms clock. [Greensway records](https://csgo.surfheaven.eu/map/surf_greensway) · [Satellite Fix records](https://csgo.surfheaven.eu/map/surf_satellite_fix) · [Tranquil records](https://csgo.surfheaven.eu/map/surf_tranquil)
+
 ## Counter-Strike: Source Surf course credits
 
 The four wrldspawn timers use the Unlicense course data. The other timers reference each map author's compiled timer brushes directly, with published tiers and named authors from KSF. KSF lists 0 for some speed caps, which indicates an unspecified per-map override. The documented native 5,000-unit per-axis cap applies on those maps. This is the desktop ranked ruleset.

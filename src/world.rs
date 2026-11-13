@@ -728,9 +728,9 @@ pub fn update_map_view(
     let (transform, projection) = camera.into_inner();
     if let Ok((mut sky_transform, mut sky_projection)) = sky.single_mut() {
         sky_transform.set_if_neq(*transform);
-        if let (Projection::Perspective(main), Projection::Perspective(sky)) =
-            (projection, &mut *sky_projection)
-            && main.fov != sky.fov
+        if let Projection::Perspective(main) = projection
+            && matches!(&*sky_projection, Projection::Perspective(sky) if main.fov != sky.fov)
+            && let Projection::Perspective(sky) = &mut *sky_projection
         {
             sky.fov = main.fov;
         }

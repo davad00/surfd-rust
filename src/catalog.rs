@@ -137,6 +137,8 @@ pub struct SourceDownload {
     pub bsp_url: String,
     pub timer_url: String,
     pub compression: MapCompression,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_member: Option<String>,
     pub stages: u16,
     pub checkpoints: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -324,6 +326,10 @@ pub fn parse_source_catalog(data: &[u8]) -> Result<CommunityCatalog, String> {
             || !valid_hash(&source.timer_sha256)
             || !valid_download_url(&download.bsp_url)
             || !valid_download_url(&download.timer_url)
+            || download.archive_member.as_ref().is_some_and(|member| {
+                !matches!(download.compression, MapCompression::Zip)
+                    || !member.strip_suffix(".bsp").is_some_and(valid_id)
+            })
             || download.shavit.as_ref().is_some_and(|shavit| {
                 !valid_hash(&shavit.sha256)
                     || shavit.tier == Some(0)
@@ -585,6 +591,7 @@ pub mod files {
             &download.bsp_url,
             &source.bsp_sha256,
             download.compression,
+            download.archive_member.as_deref(),
             MAX_GEOMETRY_BYTES,
         )?;
         if let Some(shavit) = &download.shavit {
@@ -598,6 +605,7 @@ pub mod files {
                 &download.timer_url,
                 &shavit.sha256,
                 MapCompression::None,
+                None,
                 MAX_SOURCE_TIMER_BYTES,
             )?;
             let raw = fs::read(&original).map_err(|error| error.to_string())?;
@@ -616,6 +624,7 @@ pub mod files {
             &download.timer_url,
             &source.timer_sha256,
             MapCompression::None,
+            None,
             MAX_SOURCE_TIMER_BYTES,
         )
     }
@@ -626,6 +635,7 @@ pub mod files {
         url: &str,
         expected: &str,
         compression: MapCompression,
+        archive_member: Option<&str>,
         limit: u64,
     ) -> Result<(), String> {
         if destination.is_file() && verify_sha256(destination, expected, limit).is_ok() {
@@ -647,20 +657,24 @@ pub mod files {
                 expected,
                 limit,
             ),
-            MapCompression::Zip => write_zipped_bsp(destination, body, expected, limit),
+            MapCompression::Zip => {
+                write_zipped_bsp(destination, archive_member, body, expected, limit)
+            }
         }
     }
 
     fn write_zipped_bsp(
         destination: &Path,
+        archive_member: Option<&str>,
         body: impl Read,
         expected: &str,
         limit: u64,
     ) -> Result<(), String> {
-        let name = destination
+        let filename = destination
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or("Missing BSP filename")?;
+        let name = archive_member.unwrap_or(filename);
         let mut bytes = Vec::new();
         body.take(MAX_ASSET_BYTES + 1)
             .read_to_end(&mut bytes)

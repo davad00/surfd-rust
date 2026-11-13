@@ -811,7 +811,7 @@ pub fn update_hud(
             }
             Label::RoomMapClock => {
                 if let Some(value) = online.room_map_time(now) {
-                    scratch.push_str(&value);
+                    let _ = write!(scratch, "{value}");
                 }
                 scratch.as_str()
             }

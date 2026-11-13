@@ -65,13 +65,22 @@ pub struct RoomInfo {
 }
 
 pub fn map_time_label(remaining: Duration) -> String {
-    let seconds = remaining.as_nanos().div_ceil(1_000_000_000);
-    if seconds == 0 {
-        "Changing map…".into()
-    } else if remaining < Duration::from_secs(60) {
-        format!("{seconds}s left")
-    } else {
-        format!("{} min left", seconds.div_ceil(60))
+    MapTimeLabel(remaining).to_string()
+}
+
+pub struct MapTimeLabel(pub Duration);
+
+impl std::fmt::Display for MapTimeLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let remaining = self.0;
+        let seconds = remaining.as_nanos().div_ceil(1_000_000_000);
+        if seconds == 0 {
+            f.write_str("Changing map…")
+        } else if remaining < Duration::from_secs(60) {
+            write!(f, "{seconds}s left")
+        } else {
+            write!(f, "{} min left", seconds.div_ceil(60))
+        }
     }
 }
 

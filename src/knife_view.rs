@@ -164,11 +164,17 @@ pub(super) fn update(
     mut blades: Query<(&KnifeBlade, &mut Visibility)>,
     mut arm_meshes: Query<&mut MeshMaterial3d<StandardMaterial>, With<KnifeArm>>,
     mut state: Local<ViewmodelState>,
+    benchmark: Option<Res<crate::bench::FrameBenchmark>>,
+    mut benchmark_viewmodel: Local<Option<bool>>,
 ) {
+    let show_during_benchmark = benchmark.is_some()
+        && *benchmark_viewmodel.get_or_insert_with(|| {
+            std::env::var("SURF_BENCH_FIRST_PERSON").is_ok_and(|value| value == "1")
+        });
     let active = menu.page == Page::Playing
         && game.pending.is_none()
         && !game.third_person
-        && !game.watching_replay()
+        && (!game.watching_replay() || show_during_benchmark)
         && online.spectating.is_none();
     let (knife_camera, mut camera) = knife_camera.into_inner();
     if camera.is_active != active {

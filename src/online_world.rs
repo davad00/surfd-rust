@@ -1,5 +1,5 @@
 use crate::{
-    cosmetics::{AvatarSkin, KnifeFinish},
+    cosmetics::{AvatarSkin, KnifeFinish, Loadout},
     menu::MenuState,
     online::Online,
     view::{Game, ViewCamera, knife_view::world_knife_mesh},
@@ -19,12 +19,18 @@ pub struct RemoteAvatar;
 
 #[derive(Default)]
 pub struct Actors {
-    entities: BTreeMap<u64, Entity>,
+    entities: BTreeMap<u64, RemoteActor>,
     live: HashSet<u64>,
     local: Option<Entity>,
     ghost: Option<Entity>,
     handles: Option<AgentAssets>,
     version: Option<u64>,
+}
+
+struct RemoteActor {
+    entity: Entity,
+    crouched: bool,
+    loadout: Loadout,
 }
 
 struct AgentAssets {
@@ -147,8 +153,8 @@ pub fn update_players(
 ) {
     let actors = &mut *actors;
     if actors.version != Some(game.course_version) {
-        for (_, entity) in std::mem::take(&mut actors.entities) {
-            commands.entity(entity).despawn();
+        for (_, actor) in std::mem::take(&mut actors.entities) {
+            commands.entity(actor.entity).despawn();
         }
         if let Some(entity) = actors.ghost.take() {
             commands.entity(entity).despawn();
@@ -240,6 +246,21 @@ pub fn update_players(
             actors.live.insert(player.id);
             let target = Vec3::from_array(state.position);
             let rotation = Quat::from_rotation_y(state.yaw + PI);
+            let pose = Transform::from_translation(target).with_rotation(rotation);
+            let actor = actors.entities.get_mut(&player.id);
+            let current_mesh = match actor.as_ref() {
+                Some(actor) => {
+                    let Ok((mut transform, current_mesh, _)) = avatars.get_mut(actor.entity) else {
+                        continue;
+                    };
+                    transform.set_if_neq(pose);
+                    if actor.crouched == state.crouched && actor.loadout == player.loadout {
+                        continue;
+                    }
+                    Some(current_mesh)
+                }
+                None => None,
+            };
             let mesh =
                 agent.equipped_mesh(state.crouched, player.loadout.knife_finish, &mut assets);
             let material = agent
@@ -251,36 +272,43 @@ pub fn update_players(
                 )
                 .remote
                 .clone();
-            if let Some(&entity) = actors.entities.get(&player.id) {
-                if let Ok((mut transform, mut current_mesh, _)) = avatars.get_mut(entity) {
-                    transform
-                        .set_if_neq(Transform::from_translation(target).with_rotation(rotation));
+            if let Some(actor) = actor {
+                if let Some(mut current_mesh) = current_mesh {
                     current_mesh.set_if_neq(mesh);
                 }
-                if let Ok(mut equipped) = remote_looks.get_mut(entity)
+                if let Ok(mut equipped) = remote_looks.get_mut(actor.entity)
                     && equipped.0 != material
                 {
                     equipped.0 = material;
                 }
+                actor.crouched = state.crouched;
+                actor.loadout = player.loadout;
             } else {
                 let entity = commands
                     .spawn((
                         RemoteAvatar,
                         mesh,
                         MeshMaterial3d(material),
-                        Transform::from_translation(target).with_rotation(rotation),
+                        pose,
                         Visibility::Inherited,
                     ))
                     .id();
-                actors.entities.insert(player.id, entity);
+                actors.entities.insert(
+                    player.id,
+                    RemoteActor {
+                        entity,
+                        crouched: state.crouched,
+                        loadout: player.loadout,
+                    },
+                );
             }
         }
     }
-    actors.entities.retain(|id, entity| {
+    actors.entities.retain(|id, actor| {
         if actors.live.contains(id) {
             true
         } else {
-            commands.entity(*entity).despawn();
+            commands.entity(actor.entity).despawn();
             false
         }
     });

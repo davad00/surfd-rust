@@ -136,6 +136,8 @@ Across 30 tested Source maps, tighter lightmap packing reduced baked texture upl
 
 Set `SURF_BENCH_AVATAR_COUNT` from 1 to 63 to place that many players in front of the initial replay camera. Hold the replay frame to compare the same crowd view between runs. Set `SURF_BENCH_SERIAL_PACKS=1` to compare serial map pack inflation with the bounded worker path.
 
+Set `SURF_BENCH_FIRST_PERSON=1` to include the first-person arms and knife pass in a replay benchmark. Default replay playback hides that view.
+
 Set `SURF_BENCH_ALL_LODS=1` to compare Boreas with off-screen model detail updates enabled.
 
 Set `SURF_BENCH_WIDE_VERTICES=1` to compare the previous 56-byte map vertex layout with the compact 48-byte layout.

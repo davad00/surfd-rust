@@ -6476,6 +6476,29 @@
       "minSourceRules": 4
     },
     {
+      "id": "surf_greensway_csgo",
+      "slug": "surf_greensway_csgo",
+      "name": "Greensway (CS:GO)",
+      "author": "NvC_DmN_CH",
+      "mode": "surf",
+      "tier": 2,
+      "type": "linear",
+      "bonuses": 0,
+      "minSourceRules": 5,
+      "sourceBsp": {
+        "bspSha256": "2bcc5c2add3ba347817d49103ab5fab6e8f90722d94f285022f8f4387f43e48c",
+        "timerSha256": "b6b56a2e6dbfe5d0b3b0da7cc9e63d0c96a1ccecf2f4341219559bfa2890ee2e"
+      },
+      "download": {
+        "bspUrl": "https://cdn.steamusercontent.com/ugc/1189461526463203844/51EB33F586A1E29B7E69193E2D0A0AF17D9F6599/",
+        "timerUrl": "https://raw.githubusercontent.com/davad00/surfd-rust/acea283cea775cd3674d8e983e74f60035ee1bc3/assets/community-timers/surf_greensway_csgo.surf.json",
+        "compression": "zip",
+        "stages": 0,
+        "checkpoints": 2,
+        "archiveMember": "surf_greensway.bsp"
+      }
+    },
+    {
       "id": "surf_lament_ksf",
       "slug": "surf_lament_ksf",
       "name": "Lament Ksf",
@@ -6564,6 +6587,29 @@
       "minSourceRules": 4
     },
     {
+      "id": "surf_satellite_fix_csgo",
+      "slug": "surf_satellite_fix_csgo",
+      "name": "Satellite Fix (CS:GO)",
+      "author": "Biji, iNooVa",
+      "mode": "surf",
+      "tier": 1,
+      "type": "linear",
+      "bonuses": 0,
+      "minSourceRules": 5,
+      "sourceBsp": {
+        "bspSha256": "81c40545fd2511d04916125535a63a1e91e1a7e8a946a16418cf58b40f959a87",
+        "timerSha256": "4d181507525f381e508dd7509966eba215684f05c0cd1aa19b31f3f5ce9a3554"
+      },
+      "download": {
+        "bspUrl": "https://cdn.steamusercontent.com/ugc/945095565216724122/625FE2790F298EAFB6C4E218FD6CEDA370B0DFD6/",
+        "timerUrl": "https://raw.githubusercontent.com/davad00/surfd-rust/acea283cea775cd3674d8e983e74f60035ee1bc3/assets/community-timers/surf_satellite_fix_csgo.surf.json",
+        "compression": "zip",
+        "stages": 0,
+        "checkpoints": 2,
+        "archiveMember": "surf_satellite_fix.bsp"
+      }
+    },
+    {
       "id": "surf_simpsons_source",
       "slug": "surf_simpsons_source",
       "name": "Simpsons Source",
@@ -6583,6 +6629,29 @@
         "compression": "bzip2",
         "stages": 10,
         "checkpoints": 9
+      }
+    },
+    {
+      "id": "surf_tranquil_csgo",
+      "slug": "surf_tranquil_csgo",
+      "name": "Tranquil (CS:GO)",
+      "author": "PrisonNightmare",
+      "mode": "surf",
+      "tier": 2,
+      "type": "linear",
+      "bonuses": 3,
+      "minSourceRules": 5,
+      "sourceBsp": {
+        "bspSha256": "6105509a272665c24b5545bf12dce9070aa7078ade0433eef3d7b57ba64bd15a",
+        "timerSha256": "20a1a4aba3459a5664880aa45c1a5a961f66f033ea54dd8d9740a036a5310f77"
+      },
+      "download": {
+        "bspUrl": "https://cdn.steamusercontent.com/ugc/1478822124775162922/DFE8DC0CD4A9A1C932B0CA820E48CC158C48F969/",
+        "timerUrl": "https://raw.githubusercontent.com/davad00/surfd-rust/acea283cea775cd3674d8e983e74f60035ee1bc3/assets/community-timers/surf_tranquil_csgo.surf.json",
+        "compression": "zip",
+        "stages": 0,
+        "checkpoints": 3,
+        "archiveMember": "surf_tranquil.bsp"
       }
     },
     {
