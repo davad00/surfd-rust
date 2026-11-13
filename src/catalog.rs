@@ -105,9 +105,10 @@ pub struct CatalogEntry {
     pub download: Option<SourceDownload>,
 }
 
-pub const SOURCE_MAP_RULES: u8 = 3;
+pub const SOURCE_MAP_RULES: u8 = 4;
 pub(crate) const SOURCE_RULES_NORMALIZED_OUTPUTS: u8 = 2;
 pub(crate) const SOURCE_RULES_TIMED_TRIGGERS: u8 = 3;
+pub(crate) const SOURCE_RULES_PLAYER_FILTERS: u8 = 4;
 
 fn is_zero(value: &u8) -> bool {
     *value == 0
@@ -154,6 +155,8 @@ pub struct ShavitDownload {
     pub timed_triggers: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub landmark_teleports: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub player_filters: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -293,6 +296,8 @@ pub fn configure_community(data: &[u8]) -> Result<(), String> {
                         && entry.min_source_rules < SOURCE_RULES_NORMALIZED_OUTPUTS)
                     || ((shavit.timed_triggers || shavit.landmark_teleports)
                         && entry.min_source_rules < SOURCE_RULES_TIMED_TRIGGERS)
+                    || (shavit.player_filters
+                        && entry.min_source_rules < SOURCE_RULES_PLAYER_FILTERS)
             })
         {
             return Err(format!("Invalid community map entry: {}", entry.id));

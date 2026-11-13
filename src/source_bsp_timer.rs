@@ -11,8 +11,8 @@ use sha2::{Digest, Sha256};
 
 use super::{Entity, Geometry, lookup, parse_vector, sidecar_path, source_axes};
 use crate::catalog::{
-    CatalogEntry, MapMode, SOURCE_RULES_NORMALIZED_OUTPUTS, SOURCE_RULES_TIMED_TRIGGERS,
-    valid_source_missing_filters,
+    CatalogEntry, MapMode, SOURCE_RULES_NORMALIZED_OUTPUTS, SOURCE_RULES_PLAYER_FILTERS,
+    SOURCE_RULES_TIMED_TRIGGERS, valid_source_missing_filters,
 };
 use crate::course::{
     BonusRoute, Brush, Course, Plane, PlayerOutput, PlayerOutputValue, PlayerOutputZone,
@@ -95,6 +95,8 @@ pub(super) struct Sidecar {
     source_timed_triggers: bool,
     #[serde(default)]
     source_landmark_teleports: bool,
+    #[serde(default)]
+    source_player_filters: bool,
     #[serde(skip)]
     revision: [u8; 32],
 }
@@ -271,6 +273,7 @@ impl Sidecar {
                 && entry.min_source_rules < SOURCE_RULES_NORMALIZED_OUTPUTS)
             || ((self.source_timed_triggers || self.source_landmark_teleports)
                 && entry.min_source_rules < SOURCE_RULES_TIMED_TRIGGERS)
+            || (self.source_player_filters && entry.min_source_rules < SOURCE_RULES_PLAYER_FILTERS)
             || entry
                 .download
                 .as_ref()
@@ -282,6 +285,7 @@ impl Sidecar {
                         || shavit.missing_filters != self.source_missing_filters
                         || shavit.timed_triggers != self.source_timed_triggers
                         || shavit.landmark_teleports != self.source_landmark_teleports
+                        || shavit.player_filters != self.source_player_filters
                 })
         {
             return Err("Imported entity outputs differ from the ranked map rules".into());
@@ -294,6 +298,7 @@ impl Sidecar {
         course: &mut Course,
         geometry: &Geometry,
         entities: &[Entity<'_>],
+        source_rules: u8,
     ) -> Result<(), String> {
         if self
             .max_velocity
@@ -301,15 +306,18 @@ impl Sidecar {
         {
             return Err("Invalid imported max velocity".into());
         }
-        add_player_outputs(&self, &mut course.zones, geometry, entities)?;
+        let extended_names = source_rules >= SOURCE_RULES_PLAYER_FILTERS;
+        add_player_outputs(&self, &mut course.zones, geometry, entities, extended_names)?;
         add_source_teleports(
             &mut course.zones,
             geometry,
             entities,
-            self.source_timed_triggers,
+            self.source_timed_triggers || self.source_player_filters,
             self.source_landmark_teleports,
+            extended_names,
         )?;
-        course.map_triggers.source_timed_triggers = self.source_timed_triggers;
+        course.map_triggers.source_timed_triggers =
+            self.source_timed_triggers || self.source_player_filters;
         let mut tracks = BTreeMap::new();
         for track in self.tracks {
             if tracks.insert(track.id, track).is_some() {
@@ -769,6 +777,7 @@ fn add_player_outputs(
     zones: &mut Vec<Zone>,
     geometry: &Geometry,
     entities: &[Entity<'_>],
+    extended_names: bool,
 ) -> Result<(), String> {
     let fixes = &timer.entity_output_fixes;
     let gravity_outputs = timer.source_gravity_outputs;
@@ -781,6 +790,7 @@ fn add_player_outputs(
     let missing_filter_boosters = missing_filter_boosters(&timer.source_missing_filters, entities)?;
     let mut matched = BTreeSet::new();
     let mut timed_count = 0;
+    let mut name_count = 0;
     for (index, entity) in entities.iter().enumerate() {
         let model = entity.model_index().filter(|&index| index != 0);
         let gravity_brush = gravity_outputs && entity.get("classname") == Some("trigger_gravity");
@@ -843,10 +853,29 @@ fn add_player_outputs(
                 }
                 continue;
             }
-            let Some(action) = parse_player_output(value, gravity_outputs, false)? else {
+            let Some(action) =
+                parse_player_output(value, gravity_outputs, timer.source_player_filters)?
+            else {
                 continue;
             };
             let gravity = matches!(action.value, PlayerOutputValue::Gravity(_));
+            let player_name = matches!(action.value, PlayerOutputValue::TargetName(_));
+            if player_name {
+                if !touch_trigger
+                    || !static_unnamed_trigger(entity)
+                    || entity.outputs.len() != 1
+                    || entity
+                        .get("filtername")
+                        .is_some_and(|name| !name.is_empty())
+                    || touch_event(key) != Some(true)
+                    || action.delay_ticks != 0
+                {
+                    return Err(
+                        "Imported player selector must be a static OnStartTouch name setter".into(),
+                    );
+                }
+                name_count += 1;
+            }
             if let Some(brush_gravity) = brush_gravity {
                 if gravity
                     && !(touch_event(key) == Some(true)
@@ -867,6 +896,7 @@ fn add_player_outputs(
                 continue;
             }
             if !gravity
+                && !player_name
                 && let Some((index, fix)) = fixes
                     .iter()
                     .enumerate()
@@ -883,6 +913,15 @@ fn add_player_outputs(
             }
         }
         if !triggered.is_empty() {
+            if extended_names
+                && touch_trigger
+                && entity.get("model").is_none()
+                && static_unnamed_client(entity)
+                && entity.get("filtername").is_none_or(str::is_empty)
+                && entity.outputs.len() == triggered.len()
+            {
+                continue;
+            }
             if !static_unnamed_trigger(entity)
                 || !touch_trigger
                 || entity
@@ -923,6 +962,9 @@ fn add_player_outputs(
     }
     if timer.source_timed_triggers && timed_count == 0 {
         return Err("No supported timed player triggers were found in the BSP".into());
+    }
+    if timer.source_player_filters && name_count == 0 {
+        return Err("No supported player name selectors were found in the BSP".into());
     }
     Ok(())
 }
@@ -998,6 +1040,7 @@ fn add_source_teleports(
     entities: &[Entity<'_>],
     timed: bool,
     landmarks: bool,
+    extended_names: bool,
 ) -> Result<(), String> {
     if !timed && !landmarks {
         return Ok(());
@@ -1034,6 +1077,7 @@ fn add_source_teleports(
             entities,
             target,
             &["info_teleport_destination", "info_target"],
+            extended_names,
         )?;
         let position = destination
             .origin()
@@ -1045,6 +1089,7 @@ fn add_source_teleports(
                     entities,
                     name,
                     &["info_landmark", "info_teleport_destination", "info_target"],
+                    extended_names,
                 )?
                 .origin()
                 .ok_or("Imported Source landmark has an invalid origin")?,
@@ -1059,7 +1104,7 @@ fn add_source_teleports(
             )
         });
         let filter = filter_name
-            .map(|name| source_activator_filter(entities, name))
+            .map(|name| source_activator_filter(entities, name, extended_names))
             .transpose()?;
         let kind = ZoneKind::SourceTeleport(Box::new(SourceTeleport {
             position,
@@ -1087,8 +1132,12 @@ fn add_source_teleports(
     Ok(())
 }
 
-fn source_activator_filter(entities: &[Entity<'_>], name: &str) -> Result<TriggerFilter, String> {
-    let filter = unique_source_entity(entities, name, &["filter_activator_name"])?;
+fn source_activator_filter(
+    entities: &[Entity<'_>],
+    name: &str,
+    extended_names: bool,
+) -> Result<TriggerFilter, String> {
+    let filter = unique_source_entity(entities, name, &["filter_activator_name"], extended_names)?;
     let targetname = filter
         .get("filtername")
         .filter(|name| simple_entity_name(name))
@@ -1111,8 +1160,9 @@ fn unique_source_entity<'a, 'b>(
     entities: &'a [Entity<'b>],
     name: &str,
     classes: &[&str],
+    extended_names: bool,
 ) -> Result<&'a Entity<'b>, String> {
-    if !simple_entity_name(name) {
+    if !literal_target_name(name, extended_names) {
         return Err("Imported Source entity needs a literal target name".into());
     }
     let mut matches = entities.iter().filter(|entity| {
@@ -1181,10 +1231,13 @@ fn static_client_trigger(entity: &Entity<'_>) -> bool {
 }
 
 fn static_unnamed_trigger(entity: &Entity<'_>) -> bool {
+    static_unnamed_client(entity) && entity.model_index().is_some_and(|model| model > 0)
+}
+
+fn static_unnamed_client(entity: &Entity<'_>) -> bool {
     static_client_trigger(entity)
         && entity.get("targetname").is_none_or(str::is_empty)
         && entity.get("startdisabled").is_none_or(|value| value == "0")
-        && entity.model_index().is_some_and(|model| model > 0)
 }
 
 fn parse_player_output(
@@ -1272,6 +1325,18 @@ fn simple_entity_name(name: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'_' | b'-'))
 }
 
+fn literal_target_name(name: &str, extended_names: bool) -> bool {
+    if !extended_names {
+        return simple_entity_name(name);
+    }
+    !name.is_empty()
+        && name.len() <= 64
+        && name == name.trim_ascii()
+        && name
+            .bytes()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'_' | b'-' | b'.' | b' '))
+}
+
 fn parse_gravity(raw: &str) -> Result<f32, String> {
     raw.trim()
         .parse::<f32>()
@@ -1349,6 +1414,26 @@ mod player_output_tests {
         .unwrap();
         assert_eq!(action.delay_ticks, 6);
         assert!(matches!(action.value, PlayerOutputValue::TargetName(name) if name == "active"));
+    }
+
+    #[test]
+    fn source_rules_four_resolve_literal_destination_names_without_selectors() {
+        let entities = read_entities(
+            r#"
+            { "classname" "info_teleport_destination" "targetname" "Stage 2 Easy" }
+            { "classname" "info_teleport_destination" "targetname" "s2_3.5" }
+        "#,
+        )
+        .unwrap();
+        let resolve = |name, extended| {
+            unique_source_entity(&entities, name, &["info_teleport_destination"], extended)
+        };
+        assert!(resolve("stage 2 easy", false).is_err());
+        assert!(resolve("stage 2 easy", true).is_ok());
+        assert!(resolve("s2_3.5", true).is_ok());
+        assert!(resolve("Stage*", true).is_err());
+        assert!(resolve("!activator", true).is_err());
+        assert!(resolve(" Stage 2 Easy", true).is_err());
     }
 
     #[test]

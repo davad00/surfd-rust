@@ -1102,6 +1102,7 @@ impl Room {
             let version = match self.min_source_rules {
                 1 => "0.1.8",
                 2 => "0.1.9",
+                3 => "0.1.10",
                 _ => env!("CARGO_PKG_VERSION"),
             };
             self.reject(
@@ -2328,6 +2329,8 @@ mod tests {
             (3, 1, 1, true),
             (4, 2, 1, false),
             (5, 2, 2, true),
+            (6, 4, 3, false),
+            (7, 4, 4, true),
         ] {
             room.min_source_rules = required;
             let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();

@@ -70,6 +70,8 @@ struct Sidecar<'a> {
     source_timed_triggers: bool,
     #[serde(skip_serializing_if = "is_false")]
     source_landmark_teleports: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    source_player_filters: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -194,6 +196,7 @@ pub(crate) fn normalize(
         source_missing_filters: &shavit.missing_filters,
         source_timed_triggers: shavit.timed_triggers,
         source_landmark_teleports: shavit.landmark_teleports,
+        source_player_filters: shavit.player_filters,
     };
     let mut bytes = Vec::new();
     output
@@ -460,9 +463,10 @@ mod tests {
         shavit.missing_filters.push("fix".into());
         shavit.timed_triggers = true;
         shavit.landmark_teleports = true;
+        shavit.player_filters = true;
         let extended = normalize(raw, &"a".repeat(64), MapMode::Surf, &shavit).unwrap();
         assert!(String::from_utf8(extended).unwrap().ends_with(
-            "\n  \"entity_output_fixes\": [],\n  \"source_gravity_outputs\": true,\n  \"source_missing_filters\": [\n    \"fix\"\n  ],\n  \"source_timed_triggers\": true,\n  \"source_landmark_teleports\": true\n}\n"
+            "\n  \"entity_output_fixes\": [],\n  \"source_gravity_outputs\": true,\n  \"source_missing_filters\": [\n    \"fix\"\n  ],\n  \"source_timed_triggers\": true,\n  \"source_landmark_teleports\": true,\n  \"source_player_filters\": true\n}\n"
         ));
         let json: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(json["tracks"][0]["checkpoints_required"], true);
