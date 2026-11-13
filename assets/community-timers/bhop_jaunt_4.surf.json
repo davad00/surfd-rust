@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "bsp_sha256": "338383ed1c4df17d566f7e25c26f8749687eeaf93ad442460bb4ca22ec03875c",
+  "mode": "bhop",
+  "timer": "shavit",
+  "tier": 1,
+  "tracks": [
+    {
+      "id": 0,
+      "checkpoints_required": false,
+      "checkpoints_ordered": true,
+      "bhop_enabled": true,
+      "limit_start_ground_speed": false
+    }
+  ],
+  "zones": [
+    {
+      "kind": "end",
+      "track": 0,
+      "points": [
+        [
+          6893,
+          -1412
+        ],
+        [
+          7083,
+          -1412
+        ],
+        [
+          7083,
+          -965
+        ],
+        [
+          6893,
+          -965
+        ]
+      ],
+      "bottom": 65.031,
+      "height": 127
+    },
+    {
+      "kind": "start",
+      "track": 0,
+      "points": [
+        [
+          -512,
+          160
+        ],
+        [
+          -64,
+          160
+        ],
+        [
+          -64,
+          352
+        ],
+        [
+          -512,
+          352
+        ]
+      ],
+      "bottom": 65.031,
+      "height": 127
+    }
+  ],
+  "entity_output_fixes": [],
+  "source_movement": {
+    "tick_interval_ms": 10,
+    "air_acceleration": 1000,
+    "landfix": true
+  },
+  "max_velocity": 3500,
+  "source_start_policy": "css_bhop_v5"
+}
