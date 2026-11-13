@@ -33,7 +33,7 @@ const OPAQUE_FRAGMENTS: DiagnosticPath =
 
 pub struct BenchRequest {
     pub source: MapSource,
-    pub replay: StartupReplay,
+    pub replay: Option<StartupReplay>,
 }
 
 #[derive(Resource)]
@@ -42,6 +42,7 @@ pub struct FrameBenchmark {
     pub replay: Option<StartupReplay>,
     pub start_tick: Option<usize>,
     pub hold_tick: bool,
+    static_map: bool,
     pub target: Option<Handle<Image>>,
     load_started: Option<Instant>,
     assets: Option<AssetStats>,
@@ -210,13 +211,15 @@ impl OpaquePassSamples {
 
 impl FrameBenchmark {
     pub fn new(request: BenchRequest) -> Self {
+        let static_map = request.replay.is_none();
         Self {
             request: Some(request),
             replay: None,
             start_tick: std::env::var("SURF_BENCH_START_TICK")
                 .ok()
                 .and_then(|value| value.parse().ok()),
-            hold_tick: std::env::var_os("SURF_BENCH_HOLD_TICK").is_some(),
+            hold_tick: static_map || std::env::var_os("SURF_BENCH_HOLD_TICK").is_some(),
+            static_map,
             target: None,
             load_started: None,
             assets: None,
@@ -380,9 +383,16 @@ pub fn sample(
         _ => {}
     }
 
-    let progress = game.replay_progress().filter(|_| {
-        benchmark.assets.is_some() && menu.page == Page::Playing && game.pending.is_none()
-    });
+    let progress =
+        if benchmark.assets.is_some() && menu.page == Page::Playing && game.pending.is_none() {
+            if benchmark.static_map {
+                Some((0, 0, true))
+            } else {
+                game.replay_progress()
+            }
+        } else {
+            None
+        };
     let Some((tick, _, paused)) = progress else {
         if !matches!(benchmark.phase, Phase::Waiting) || benchmark.assets.is_some() {
             eprintln!("Benchmark lost its active replay");

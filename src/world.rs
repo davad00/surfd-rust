@@ -790,12 +790,6 @@ fn update_visible_lods(
     let lods = lods.into_inner();
     let pvs = lods.visibility.pvs.as_ref();
     for group in &mut lods.groups {
-        if !all_lods
-            && let (Some(pvs), Some(clusters)) = (pvs, &group.clusters)
-            && !pvs.visible(clusters)
-        {
-            continue;
-        }
         let depth = (group.transform.translation - position).dot(forward);
         if depth < -group.radius {
             continue;
@@ -807,6 +801,12 @@ fn update_visible_lods(
             .position(|&point| point > metric)
             .unwrap_or(group.switch_points.len());
         if group.active == level {
+            continue;
+        }
+        if !all_lods
+            && let (Some(pvs), Some(clusters)) = (pvs, &group.clusters)
+            && !pvs.visible(clusters)
+        {
             continue;
         }
         let group_frustum = if group.sky {

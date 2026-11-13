@@ -33,7 +33,7 @@ use library::MapLibrary;
 use serde::Deserialize;
 use view::StartupReplay;
 
-const USAGE: &str = "Usage: bevy-surf [--map FILE.bsp | --inspect FILE.bsp | --catalog MAP | --inspect-catalog MAP | --replay FILE.json | --inspect-replay FILE.json | --bench-replay FILE.json | --surfd GEOMETRY [VISUAL-MANIFEST] | --inspect-surfd GEOMETRY [VISUAL-MANIFEST] | --room-status ROOM_ID | --check-room ROOM_ID]";
+const USAGE: &str = "Usage: bevy-surf [--map FILE.bsp | --inspect FILE.bsp | --catalog MAP | --inspect-catalog MAP | --replay FILE.json | --inspect-replay FILE.json | --bench-replay FILE.json | --bench-map FILE.bsp | --surfd GEOMETRY [VISUAL-MANIFEST] | --inspect-surfd GEOMETRY [VISUAL-MANIFEST] | --room-status ROOM_ID | --check-room ROOM_ID]";
 
 fn main() -> ExitCode {
     match launch() {
@@ -61,6 +61,7 @@ fn launch() -> Result<(), String> {
                     | "--replay"
                     | "--inspect-replay"
                     | "--bench-replay"
+                    | "--bench-map"
                     | "--check-room"
             )
         })
@@ -159,6 +160,20 @@ fn launch() -> Result<(), String> {
             }
             course
         }
+        Some("--bench-map") => {
+            let path = PathBuf::from(args.next().ok_or("Expected a map file")?);
+            if args.next().is_some() {
+                return Err(USAGE.to_owned());
+            }
+            view::run(
+                Course::practice(),
+                None,
+                Some(bench::BenchRequest {
+                    source: library::MapSource::Source(path),
+                    replay: None,
+                }),
+            )
+        }
         Some("--replay" | "--inspect-replay" | "--bench-replay") => {
             let path = PathBuf::from(args.next().ok_or("Expected a replay file")?);
             if args.next().is_some() {
@@ -177,7 +192,10 @@ fn launch() -> Result<(), String> {
                 return view::run(
                     Course::practice(),
                     None,
-                    Some(bench::BenchRequest { source, replay }),
+                    Some(bench::BenchRequest {
+                        source,
+                        replay: Some(replay),
+                    }),
                 );
             }
             let inspect = flag.as_deref().is_some_and(|arg| arg == "--inspect-replay");

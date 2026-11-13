@@ -955,7 +955,7 @@ fn configure_map_assets(
         match library.start_benchmark_load(request.source, parallel_packs) {
             Ok(job) => {
                 game.pending = Some(job);
-                bench.replay = Some(request.replay);
+                bench.replay = request.replay;
                 menu.go(Page::Maps);
                 menu.set_status("Loading benchmark course…".into());
             }
