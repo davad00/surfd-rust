@@ -211,7 +211,7 @@ impl Sidecar {
         }
 
         self.source_movement.validate()?;
-        if self.source_movement.landfix
+        if self.source_movement.landfix == Some(true)
             && (self.mode != MapMode::Bhop || self.source_movement.tick_interval().millis() != 10)
         {
             return Err("Imported landfix requires a 100 Hz Bhop profile".into());
@@ -356,7 +356,7 @@ impl Sidecar {
             || (self.source_player_filters && entry.min_source_rules < SOURCE_RULES_PLAYER_FILTERS)
             || (self.source_movement.tick_interval_ms.is_some()
                 && entry.min_source_rules < SOURCE_RULES_TICK_INTERVAL)
-            || ((self.source_movement.landfix || self.source_start_policy.is_some())
+            || ((self.source_movement.landfix.is_some() || self.source_start_policy.is_some())
                 && entry.min_source_rules < SOURCE_RULES_CSS_BHOP)
             || ((self.source_movement.changes_defaults()
                 || self.source_prestart_target.is_some()

@@ -1,5 +1,5 @@
 use crate::course::Course;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 const DEFAULT_GRAVITY: f32 = 800.0;
 const DEFAULT_AIR_ACCELERATION: f32 = 150.0;
@@ -71,8 +71,12 @@ pub(crate) struct SourceMovementSettings {
     pub ground_friction: Option<f32>,
     pub stop_speed: Option<f32>,
     pub tick_interval_ms: Option<TickInterval>,
-    #[serde(default)]
-    pub landfix: bool,
+    #[serde(default, deserialize_with = "deserialize_landfix")]
+    pub landfix: Option<bool>,
+}
+
+fn deserialize_landfix<'de, D: Deserializer<'de>>(input: D) -> Result<Option<bool>, D::Error> {
+    bool::deserialize(input).map(Some)
 }
 
 impl SourceMovementSettings {
@@ -112,7 +116,7 @@ impl SourceMovementSettings {
             ground_friction: self.ground_friction.unwrap_or(rules.ground_friction),
             stop_speed: self.stop_speed.unwrap_or(rules.stop_speed),
             tick_interval: self.tick_interval(),
-            landfix: self.landfix,
+            landfix: self.landfix.unwrap_or(rules.landfix),
             ..rules
         }
     }

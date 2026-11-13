@@ -1234,6 +1234,20 @@ mod tests {
                 .is_some()
         );
         doc.as_object_mut().unwrap().remove("source_start_policy");
+        doc["source_movement"]["landfix"] = false.into();
+        entry.source_bsp.as_mut().unwrap().timer_sha256 = install_timer(&doc);
+        entry.min_source_rules = SOURCE_RULES_TICK_INTERVAL;
+        assert!(load_ranked_collision(&path, &entry).is_err());
+        entry.min_source_rules = SOURCE_RULES_CSS_BHOP;
+        let landfix_off = load_ranked_collision(&path, &entry).unwrap();
+        assert!(!MovementRules::for_course(&landfix_off).landfix);
+        doc["source_movement"]["landfix"] = serde_json::Value::Null;
+        entry.source_bsp.as_mut().unwrap().timer_sha256 = install_timer(&doc);
+        assert!(load_ranked_collision(&path, &entry).is_err());
+        doc["source_movement"]
+            .as_object_mut()
+            .unwrap()
+            .remove("landfix");
         doc["source_movement"]["tick_interval_ms"] = 15.into();
         entry.source_bsp.as_mut().unwrap().timer_sha256 = install_timer(&doc);
         entry.min_source_rules = SOURCE_RULES_MOVEMENT_SETTINGS;
