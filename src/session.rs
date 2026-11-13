@@ -1,4 +1,7 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use bevy_math::{DVec3, Vec3};
 use serde::{Deserialize, Serialize};
@@ -109,11 +112,12 @@ struct TriggerState {
     targetname: String,
     output_contacts: HashSet<usize>,
     accepted_outputs: HashSet<usize>,
+    timed_output_ready: HashMap<usize, u64>,
     accepted_pushes: HashSet<usize>,
     gravity_scale: Option<f32>,
     movement_scale: Option<f32>,
     jump_disabled: bool,
-    pending_outputs: Vec<(u64, PlayerOutputValue)>,
+    pending_outputs: Vec<(u64, i32, PlayerOutputValue)>,
     stage_start_recovery: bool,
     teleport_movement_lock: bool,
     imported_start_armed: bool,
@@ -865,6 +869,9 @@ impl Session {
             }
             self.triggers.pending_push = pending;
         }
+        let source_targetname = map
+            .source_timed_triggers
+            .then(|| self.triggers.targetname.clone());
         self.update_player_outputs(effects, precise_triggers);
 
         if movement.jumped {
@@ -906,7 +913,9 @@ impl Session {
             from,
             to,
             hull,
-            &self.triggers.targetname,
+            source_targetname
+                .as_deref()
+                .unwrap_or(&self.triggers.targetname),
             bonus.is_some(),
         );
         let mut running_from = 0.0;
@@ -1119,6 +1128,22 @@ impl Session {
                     segment_end = at;
                     break;
                 }
+                ZoneEvent::SourceTeleport(teleport) if !finished => {
+                    self.player.position =
+                        teleport.landmark.map_or(teleport.position, |landmark| {
+                            teleport.position + (self.player.position - landmark)
+                        });
+                    self.mark_pose_discontinuity();
+                    self.player.detach_ground();
+                    if let Some((yaw, pitch, source_yaw)) = teleport.view {
+                        view_yaw = Some(yaw);
+                        self.pitch_override = Some(pitch);
+                        self.source_yaw_override = Some(source_yaw);
+                    }
+                    teleported = true;
+                    segment_end = at;
+                    break;
+                }
                 _ => {}
             }
         }
@@ -1266,13 +1291,13 @@ impl Session {
         let ready = self
             .triggers
             .pending_outputs
-            .partition_point(|(tick, _)| *tick <= self.triggers.tick);
+            .partition_point(|(tick, _, _)| *tick <= self.triggers.tick);
         let due = self
             .triggers
             .pending_outputs
             .drain(..ready)
             .collect::<Vec<_>>();
-        for (_, value) in due {
+        for (_, _, value) in due {
             self.apply_player_output(value);
         }
         let position = self.player.position;
@@ -1290,7 +1315,7 @@ impl Session {
             })
             .collect();
         let mut seen = HashSet::new();
-        let mut actions = Vec::<&PlayerOutput>::new();
+        let mut actions = Vec::<(&PlayerOutput, i32)>::new();
         for zone in zones {
             let ZoneKind::PlayerOutput(output) = &zone.kind else {
                 continue;
@@ -1311,28 +1336,48 @@ impl Session {
                     )
                 {
                     self.triggers.accepted_outputs.insert(output.index);
-                    actions.extend(&output.on_start);
+                    actions.extend(output.on_start.iter().map(|action| (action, 0)));
                 }
-                actions.extend(&output.on_touch);
+                actions.extend(output.on_touch.iter().map(|action| (action, 0)));
+                if let Some(trigger) = &output.on_trigger {
+                    let next = self
+                        .triggers
+                        .timed_output_ready
+                        .entry(output.index)
+                        .or_default();
+                    if *next <= self.triggers.tick {
+                        *next = self.triggers.tick + u64::from(trigger.repeat_ticks);
+                        actions.extend(
+                            trigger
+                                .actions
+                                .iter()
+                                .map(|action| (&action.output, action.delay_from_tick_ns)),
+                        );
+                    }
+                }
             } else if self.triggers.accepted_outputs.remove(&output.index) {
-                actions.extend(&output.on_end);
+                actions.extend(output.on_end.iter().map(|action| (action, 0)));
             }
         }
         self.triggers.output_contacts = contacts;
         let mut scheduled = false;
-        for action in actions {
+        for (action, delay_from_tick_ns) in actions {
             if action.delay_ticks == 0 {
                 self.apply_player_output(action.value.clone());
             } else {
                 let tick = self.triggers.tick + u64::from(action.delay_ticks);
-                self.triggers
-                    .pending_outputs
-                    .push((tick, action.value.clone()));
+                self.triggers.pending_outputs.push((
+                    tick,
+                    delay_from_tick_ns,
+                    action.value.clone(),
+                ));
                 scheduled = true;
             }
         }
         if scheduled {
-            self.triggers.pending_outputs.sort_by_key(|(tick, _)| *tick);
+            self.triggers
+                .pending_outputs
+                .sort_by_key(|(tick, sub_tick, _)| (*tick, *sub_tick));
         }
     }
 
@@ -1685,6 +1730,7 @@ enum ZoneEvent<'a> {
         velocity: TeleportVelocity,
     },
     AuthoredTeleport(&'a AuthoredTeleport),
+    SourceTeleport(&'a crate::course::SourceTeleport),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1702,7 +1748,7 @@ impl ZoneEvent<'_> {
             Self::Checkpoint(order) => (2, order),
             Self::Finish => (3, 0),
             Self::Reset => (4, 0),
-            Self::Teleport { .. } | Self::AuthoredTeleport(_) => (5, 0),
+            Self::Teleport { .. } | Self::AuthoredTeleport(_) | Self::SourceTeleport(_) => (5, 0),
         }
     }
 }
@@ -1726,10 +1772,22 @@ fn zone_events<'a>(
     }];
     let has_motion = !segments.is_empty();
     let segments = if has_motion { segments } else { &fallback };
-    for segment in segments {
+    for (segment_index, segment) in segments.iter().enumerate() {
         let sweep_min = segment.from.min(segment.to) + hull.min;
         let sweep_max = segment.from.max(segment.to) + hull.max;
         for (index, zone) in zones.iter().enumerate() {
+            if let ZoneKind::SourceTeleport(ref teleport) = zone.kind {
+                if segment_index + 1 == segments.len()
+                    && teleport
+                        .filter
+                        .as_ref()
+                        .is_none_or(|filter| filter.accepts(targetname))
+                    && hull.touches(zone, to)
+                {
+                    events.push((1.0, ZoneEvent::SourceTeleport(teleport)));
+                }
+                continue;
+            }
             if !hull.precise
                 && (!sweep_min.cmple(zone.brush.max).all()
                     || !sweep_max.cmpge(zone.brush.min).all())
@@ -1740,7 +1798,8 @@ fn zone_events<'a>(
                 ZoneKind::StageStart(_)
                 | ZoneKind::Push { .. }
                 | ZoneKind::NoJump(_)
-                | ZoneKind::PlayerOutput(_) => continue,
+                | ZoneKind::PlayerOutput(_)
+                | ZoneKind::SourceTeleport(_) => continue,
                 ZoneKind::Start => None,
                 ZoneKind::Checkpoint(order) => Some(ZoneEvent::Checkpoint(order)),
                 ZoneKind::Finish => Some(ZoneEvent::Finish),
@@ -1964,6 +2023,7 @@ mod tests {
             brush: Brush::box_at(origin - Vec3::splat(48.0), origin + Vec3::splat(48.0)),
             kind: ZoneKind::PlayerOutput(Box::new(crate::course::PlayerOutputZone {
                 index: 0,
+                on_trigger: None,
                 filter: None,
                 filter_multi: None,
                 on_start: vec![
@@ -1995,6 +2055,121 @@ mod tests {
         let before = session.player.velocity.y;
         session.tick(&course, neutral);
         assert!(session.player.velocity.y < before);
+    }
+
+    #[test]
+    fn source_timed_teleport_waits_for_the_prior_ticks_output_and_keeps_velocity() {
+        use crate::course::{
+            PlayerOutputZone, SourceTeleport, TimedPlayerAction, TimedPlayerOutput, TriggerFilter,
+        };
+
+        let spawn = Vec3::new(0.0, 100.0, 0.0);
+        let bounds = Brush::box_at(spawn - Vec3::splat(64.0), spawn + Vec3::splat(64.0));
+        let target = Vec3::new(500.0, 100.0, 0.0);
+        let mut map = course(vec![
+            Zone {
+                brush: bounds.clone(),
+                kind: ZoneKind::PlayerOutput(Box::new(PlayerOutputZone {
+                    index: 1,
+                    filter: None,
+                    filter_multi: None,
+                    on_start: vec![],
+                    on_end: vec![],
+                    on_touch: vec![],
+                    on_trigger: Some(TimedPlayerOutput {
+                        repeat_ticks: 1,
+                        actions: vec![
+                            TimedPlayerAction {
+                                delay_from_tick_ns: 0,
+                                output: PlayerOutput {
+                                    delay_ticks: 6,
+                                    value: PlayerOutputValue::TargetName("active".into()),
+                                },
+                            },
+                            TimedPlayerAction {
+                                delay_from_tick_ns: -5_000_000,
+                                output: PlayerOutput {
+                                    delay_ticks: 7,
+                                    value: PlayerOutputValue::TargetName("default".into()),
+                                },
+                            },
+                        ],
+                    }),
+                })),
+            },
+            Zone {
+                brush: bounds,
+                kind: ZoneKind::SourceTeleport(Box::new(SourceTeleport {
+                    position: target,
+                    landmark: None,
+                    view: Some((0.25, 0.0, 105.0)),
+                    filter: Some(TriggerFilter {
+                        targetname: "active".into(),
+                        negated: false,
+                    }),
+                })),
+            },
+        ]);
+        map.spawn = spawn;
+        map.map_triggers.source_timed_triggers = true;
+        let mut session = Session::new(&map);
+        session.player.velocity.x = 100.0;
+        let neutral = MoveInput::default();
+        for _ in 0..7 {
+            assert!(session.tick(&map, neutral).is_none());
+            assert!(session.player.position.x < target.x);
+        }
+        assert_eq!(session.triggers.targetname, "active");
+        assert_eq!(session.tick(&map, neutral), Some(0.25));
+        assert_eq!(session.player.position, target);
+        assert_eq!(session.player.velocity.x, 100.0);
+        assert_eq!(session.triggers.targetname, "active");
+    }
+
+    #[test]
+    fn source_timed_outputs_sharing_a_due_tick_keep_their_fire_time_order() {
+        use crate::course::{PlayerOutputZone, TimedPlayerAction, TimedPlayerOutput};
+
+        let spawn = Vec3::new(0.0, 100.0, 0.0);
+        let mut map = course(vec![Zone {
+            brush: Brush::box_at(spawn - Vec3::splat(64.0), spawn + Vec3::splat(64.0)),
+            kind: ZoneKind::PlayerOutput(Box::new(PlayerOutputZone {
+                index: 1,
+                filter: None,
+                filter_multi: None,
+                on_start: vec![],
+                on_end: vec![],
+                on_touch: vec![],
+                on_trigger: Some(TimedPlayerOutput {
+                    repeat_ticks: 1,
+                    actions: vec![
+                        TimedPlayerAction {
+                            delay_from_tick_ns: -5_000_000,
+                            output: PlayerOutput {
+                                delay_ticks: 7,
+                                value: PlayerOutputValue::TargetName("active".into()),
+                            },
+                        },
+                        TimedPlayerAction {
+                            delay_from_tick_ns: 0,
+                            output: PlayerOutput {
+                                delay_ticks: 10,
+                                value: PlayerOutputValue::TargetName("default".into()),
+                            },
+                        },
+                    ],
+                }),
+            })),
+        }]);
+        map.spawn = spawn;
+        let mut session = Session::new(&map);
+        let neutral = MoveInput::default();
+        for _ in 0..10 {
+            session.tick(&map, neutral);
+        }
+        assert_eq!(session.triggers.targetname, "active");
+        session.tick(&map, neutral);
+        assert_eq!(session.triggers.targetname, "default");
     }
     fn zone(min_x: f32, max_x: f32, kind: ZoneKind) -> Zone {
         Zone {
@@ -2358,6 +2533,7 @@ mod tests {
                 75.0,
                 ZoneKind::PlayerOutput(Box::new(PlayerOutputZone {
                     index: 0,
+                    on_trigger: None,
                     filter: None,
                     filter_multi: None,
                     on_touch: Vec::new(),

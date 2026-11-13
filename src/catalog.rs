@@ -105,8 +105,9 @@ pub struct CatalogEntry {
     pub download: Option<SourceDownload>,
 }
 
-pub const SOURCE_MAP_RULES: u8 = 2;
+pub const SOURCE_MAP_RULES: u8 = 3;
 pub(crate) const SOURCE_RULES_NORMALIZED_OUTPUTS: u8 = 2;
+pub(crate) const SOURCE_RULES_TIMED_TRIGGERS: u8 = 3;
 
 fn is_zero(value: &u8) -> bool {
     *value == 0
@@ -149,6 +150,10 @@ pub struct ShavitDownload {
     pub gravity_outputs: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing_filters: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub timed_triggers: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub landmark_teleports: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -286,6 +291,8 @@ pub fn configure_community(data: &[u8]) -> Result<(), String> {
                     || !valid_source_missing_filters(&shavit.missing_filters)
                     || ((shavit.gravity_outputs || !shavit.missing_filters.is_empty())
                         && entry.min_source_rules < SOURCE_RULES_NORMALIZED_OUTPUTS)
+                    || ((shavit.timed_triggers || shavit.landmark_teleports)
+                        && entry.min_source_rules < SOURCE_RULES_TIMED_TRIGGERS)
             })
         {
             return Err(format!("Invalid community map entry: {}", entry.id));
@@ -559,15 +566,8 @@ pub mod files {
                 MAX_SOURCE_TIMER_BYTES,
             )?;
             let raw = fs::read(&original).map_err(|error| error.to_string())?;
-            let normalized = crate::shavit_download::normalize(
-                &raw,
-                &source.bsp_sha256,
-                entry.mode,
-                shavit.tier,
-                &shavit.spawn_targets,
-                shavit.gravity_outputs,
-                &shavit.missing_filters,
-            )?;
+            let normalized =
+                crate::shavit_download::normalize(&raw, &source.bsp_sha256, entry.mode, shavit)?;
             return write_source_file(
                 &timer,
                 normalized.as_slice(),

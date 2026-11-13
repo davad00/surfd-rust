@@ -238,6 +238,7 @@ pub enum ZoneKind {
         yaw: Option<f32>,
         keep_downward_velocity: bool,
     },
+    SourceTeleport(Box<SourceTeleport>),
     AuthoredTeleport(Box<AuthoredTeleport>),
     Push {
         index: usize,
@@ -251,6 +252,7 @@ pub enum ZoneKind {
 pub struct MapTriggers {
     pub(crate) source_world_limit: Option<f32>,
     pub(crate) source_mode: Option<crate::catalog::MapMode>,
+    pub(crate) source_timed_triggers: bool,
     pub spawn_pitch: Option<f32>,
     pub(crate) spawn_source_yaw: Option<f64>,
     pub(crate) brush_index: OnceLock<Option<Arc<BrushIndex>>>,
@@ -383,6 +385,14 @@ impl TriggerPredicate {
 }
 
 #[derive(Clone)]
+pub struct SourceTeleport {
+    pub position: Vec3,
+    pub landmark: Option<Vec3>,
+    pub view: Option<(f32, f32, f64)>,
+    pub filter: Option<TriggerFilter>,
+}
+
+#[derive(Clone)]
 pub struct AuthoredTeleport {
     pub position: Vec3,
     pub yaw: f32,
@@ -409,6 +419,19 @@ pub struct PlayerOutputZone {
     pub on_start: Vec<PlayerOutput>,
     pub on_end: Vec<PlayerOutput>,
     pub on_touch: Vec<PlayerOutput>,
+    pub on_trigger: Option<TimedPlayerOutput>,
+}
+
+#[derive(Clone)]
+pub struct TimedPlayerOutput {
+    pub repeat_ticks: u32,
+    pub actions: Vec<TimedPlayerAction>,
+}
+
+#[derive(Clone)]
+pub struct TimedPlayerAction {
+    pub delay_from_tick_ns: i32,
+    pub output: PlayerOutput,
 }
 
 #[derive(Clone)]
@@ -424,6 +447,39 @@ pub enum PlayerOutputValue {
     BaseVelocity(Vec3),
     Gravity(f32),
     LaggedMovement { scale: f32, suppress_jump: bool },
+}
+
+fn hash_player_outputs(digest: &mut Sha256, actions: &[PlayerOutput]) {
+    digest.update((actions.len() as u64).to_le_bytes());
+    for action in actions {
+        digest.update(action.delay_ticks.to_le_bytes());
+        match &action.value {
+            PlayerOutputValue::TargetName(name) => {
+                digest.update([0]);
+                digest.update((name.len() as u64).to_le_bytes());
+                digest.update(name.as_bytes());
+            }
+            PlayerOutputValue::Velocity(value) => {
+                digest.update([1]);
+                hash_vec(digest, *value);
+            }
+            PlayerOutputValue::BaseVelocity(value) => {
+                digest.update([2]);
+                hash_vec(digest, *value);
+            }
+            PlayerOutputValue::Gravity(value) => {
+                digest.update([3]);
+                digest.update(value.to_le_bytes());
+            }
+            PlayerOutputValue::LaggedMovement {
+                scale,
+                suppress_jump,
+            } => {
+                digest.update([4, u8::from(*suppress_jump)]);
+                digest.update(scale.to_le_bytes());
+            }
+        }
+    }
 }
 
 impl Brush {
@@ -742,6 +798,23 @@ impl Course {
                         digest.update(yaw.to_le_bytes());
                     }
                 }
+                ZoneKind::SourceTeleport(ref teleport) => {
+                    digest.update([
+                        12,
+                        u8::from(teleport.view.is_some()),
+                        u8::from(teleport.landmark.is_some()),
+                    ]);
+                    hash_vec(&mut digest, teleport.position);
+                    if let Some(landmark) = teleport.landmark {
+                        hash_vec(&mut digest, landmark);
+                    }
+                    if let Some((yaw, pitch, source_yaw)) = teleport.view {
+                        digest.update(yaw.to_le_bytes());
+                        digest.update(pitch.to_le_bytes());
+                        digest.update(source_yaw.to_le_bytes());
+                    }
+                    hash_filter(&mut digest, teleport.filter.as_ref());
+                }
                 ZoneKind::AuthoredTeleport(ref teleport) => {
                     digest.update([
                         7,
@@ -775,37 +848,17 @@ impl Course {
                     digest.update([10]);
                     digest.update((output.index as u64).to_le_bytes());
                     hash_filter(&mut digest, output.filter.as_ref());
-                    for actions in [&output.on_start, &output.on_end] {
-                        digest.update((actions.len() as u64).to_le_bytes());
-                        for action in actions {
-                            digest.update(action.delay_ticks.to_le_bytes());
-                            match &action.value {
-                                PlayerOutputValue::TargetName(name) => {
-                                    digest.update([0]);
-                                    digest.update((name.len() as u64).to_le_bytes());
-                                    digest.update(name.as_bytes());
-                                }
-                                PlayerOutputValue::Velocity(value) => {
-                                    digest.update([1]);
-                                    hash_vec(&mut digest, *value);
-                                }
-                                PlayerOutputValue::BaseVelocity(value) => {
-                                    digest.update([2]);
-                                    hash_vec(&mut digest, *value);
-                                }
-                                PlayerOutputValue::Gravity(value) => {
-                                    digest.update([3]);
-                                    digest.update(value.to_le_bytes());
-                                }
-                                PlayerOutputValue::LaggedMovement {
-                                    scale,
-                                    suppress_jump,
-                                } => {
-                                    digest.update([4, u8::from(*suppress_jump)]);
-                                    digest.update(scale.to_le_bytes());
-                                }
-                            }
+                    if let Some(trigger) = &output.on_trigger {
+                        digest.update([0xff]);
+                        digest.update(trigger.repeat_ticks.to_le_bytes());
+                        digest.update((trigger.actions.len() as u64).to_le_bytes());
+                        for action in &trigger.actions {
+                            digest.update(action.delay_from_tick_ns.to_le_bytes());
+                            hash_player_outputs(&mut digest, std::slice::from_ref(&action.output));
                         }
+                    }
+                    for actions in [&output.on_start, &output.on_end] {
+                        hash_player_outputs(&mut digest, actions);
                     }
                 }
             }

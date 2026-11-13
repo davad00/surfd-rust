@@ -11,11 +11,13 @@ use sha2::{Digest, Sha256};
 
 use super::{Entity, Geometry, lookup, parse_vector, sidecar_path, source_axes};
 use crate::catalog::{
-    CatalogEntry, MapMode, SOURCE_RULES_NORMALIZED_OUTPUTS, valid_source_missing_filters,
+    CatalogEntry, MapMode, SOURCE_RULES_NORMALIZED_OUTPUTS, SOURCE_RULES_TIMED_TRIGGERS,
+    valid_source_missing_filters,
 };
 use crate::course::{
     BonusRoute, Brush, Course, Plane, PlayerOutput, PlayerOutputValue, PlayerOutputZone,
-    PracticeSpawn, Zone, ZoneKind,
+    PracticeSpawn, SourceTeleport, TimedPlayerAction, TimedPlayerOutput, TriggerFilter, Zone,
+    ZoneKind,
 };
 use crate::movement::TICK_HZ;
 
@@ -89,6 +91,10 @@ pub(super) struct Sidecar {
     source_gravity_outputs: bool,
     #[serde(default)]
     source_missing_filters: Vec<String>,
+    #[serde(default)]
+    source_timed_triggers: bool,
+    #[serde(default)]
+    source_landmark_teleports: bool,
     #[serde(skip)]
     revision: [u8; 32],
 }
@@ -263,6 +269,8 @@ impl Sidecar {
         if (self.source_gravity_outputs && entry.min_source_rules == 0)
             || (!self.source_missing_filters.is_empty()
                 && entry.min_source_rules < SOURCE_RULES_NORMALIZED_OUTPUTS)
+            || ((self.source_timed_triggers || self.source_landmark_teleports)
+                && entry.min_source_rules < SOURCE_RULES_TIMED_TRIGGERS)
             || entry
                 .download
                 .as_ref()
@@ -272,6 +280,8 @@ impl Sidecar {
                         && entry.min_source_rules < SOURCE_RULES_NORMALIZED_OUTPUTS)
                         || shavit.gravity_outputs != self.source_gravity_outputs
                         || shavit.missing_filters != self.source_missing_filters
+                        || shavit.timed_triggers != self.source_timed_triggers
+                        || shavit.landmark_teleports != self.source_landmark_teleports
                 })
         {
             return Err("Imported entity outputs differ from the ranked map rules".into());
@@ -291,6 +301,15 @@ impl Sidecar {
         {
             return Err("Invalid imported max velocity".into());
         }
+        add_player_outputs(&self, &mut course.zones, geometry, entities)?;
+        add_source_teleports(
+            &mut course.zones,
+            geometry,
+            entities,
+            self.source_timed_triggers,
+            self.source_landmark_teleports,
+        )?;
+        course.map_triggers.source_timed_triggers = self.source_timed_triggers;
         let mut tracks = BTreeMap::new();
         for track in self.tracks {
             if tracks.insert(track.id, track).is_some() {
@@ -300,15 +319,6 @@ impl Sidecar {
         if !tracks.contains_key(&0) {
             return Err("Imported timer data has no main track".into());
         }
-
-        add_player_outputs(
-            &mut course.zones,
-            &self.entity_output_fixes,
-            self.source_gravity_outputs,
-            &self.source_missing_filters,
-            geometry,
-            entities,
-        )?;
         let effects = std::mem::take(&mut course.zones);
         let mut routes = BTreeMap::<u16, Vec<Zone>>::new();
         let mut starts = BTreeMap::<u16, PracticeSpawn>::new();
@@ -755,21 +765,22 @@ mod polygon_tests {
 }
 
 fn add_player_outputs(
+    timer: &Sidecar,
     zones: &mut Vec<Zone>,
-    fixes: &[OutputFix],
-    gravity_outputs: bool,
-    missing_filters: &[String],
     geometry: &Geometry,
     entities: &[Entity<'_>],
 ) -> Result<(), String> {
+    let fixes = &timer.entity_output_fixes;
+    let gravity_outputs = timer.source_gravity_outputs;
     if fixes
         .iter()
         .any(|fix| touch_event(&fix.from_key).is_none() || touch_event(&fix.to_key).is_none())
     {
         return Err("Imported output fixes must use supported touch events".into());
     }
-    let missing_filter_boosters = missing_filter_boosters(missing_filters, entities)?;
+    let missing_filter_boosters = missing_filter_boosters(&timer.source_missing_filters, entities)?;
     let mut matched = BTreeSet::new();
+    let mut timed_count = 0;
     for (index, entity) in entities.iter().enumerate() {
         let model = entity.model_index().filter(|&index| index != 0);
         let gravity_brush = gravity_outputs && entity.get("classname") == Some("trigger_gravity");
@@ -804,9 +815,35 @@ fn add_player_outputs(
                 })
                 .into_iter()
                 .collect(),
+            on_trigger: None,
         };
+        let mut triggered = Vec::new();
         for &(mut key, value) in &entity.outputs {
-            let Some(action) = parse_player_output(value, gravity_outputs)? else {
+            if timer.source_timed_triggers && key.eq_ignore_ascii_case("OnTrigger") {
+                if let Some(action) = parse_player_output(value, gravity_outputs, true)? {
+                    if !matches!(
+                        action.value,
+                        PlayerOutputValue::TargetName(_) | PlayerOutputValue::Gravity(_)
+                    ) {
+                        return Err("Unsupported imported timed player action".into());
+                    }
+                    let delimiter = if value.contains('\x1b') { '\x1b' } else { ',' };
+                    let delay = value
+                        .split(delimiter)
+                        .nth(3)
+                        .ok_or("Imported timed output has no delay")?;
+                    let seconds = parse_trigger_seconds(delay)?;
+                    let delay_from_tick_ns = ((seconds - f64::from(action.delay_ticks) / TICK_HZ)
+                        * 1_000_000_000.0)
+                        .round() as i32;
+                    triggered.push(TimedPlayerAction {
+                        delay_from_tick_ns,
+                        output: action,
+                    });
+                }
+                continue;
+            }
+            let Some(action) = parse_player_output(value, gravity_outputs, false)? else {
                 continue;
             };
             let gravity = matches!(action.value, PlayerOutputValue::Gravity(_));
@@ -845,15 +882,35 @@ fn add_player_outputs(
                 None => {}
             }
         }
+        if !triggered.is_empty() {
+            if !static_unnamed_trigger(entity)
+                || !touch_trigger
+                || entity
+                    .get("filtername")
+                    .is_some_and(|name| !name.is_empty())
+                || entity.outputs.len() != triggered.len()
+            {
+                return Err("Imported timed player actions need a static trigger_multiple".into());
+            }
+            let repeat_ticks = trigger_wait_ticks(entity.get("wait").unwrap_or("0"))?;
+            output.on_trigger = Some(TimedPlayerOutput {
+                repeat_ticks,
+                actions: triggered,
+            });
+            timed_count += 1;
+        }
         if let Some(model) = model
             && (!output.on_start.is_empty()
                 || !output.on_end.is_empty()
-                || !output.on_touch.is_empty())
+                || !output.on_touch.is_empty()
+                || output.on_trigger.is_some())
         {
             let model = lookup(&geometry.models, model, "output model")?;
             let brushes = geometry.model_brushes(model, entity.placement(), false)?;
-            if brushes.is_empty() && missing_filter_boosters.contains(&index) {
-                return Err("Imported missing filter exit booster has no brush".into());
+            if brushes.is_empty()
+                && (missing_filter_boosters.contains(&index) || output.on_trigger.is_some())
+            {
+                return Err("Imported player output has no brush".into());
             }
             zones.extend(brushes.into_iter().map(|brush| Zone {
                 brush,
@@ -863,6 +920,9 @@ fn add_player_outputs(
     }
     if matched.len() != fixes.len() {
         return Err("An imported Stripper output fix did not match a supported BSP output".into());
+    }
+    if timer.source_timed_triggers && timed_count == 0 {
+        return Err("No supported timed player triggers were found in the BSP".into());
     }
     Ok(())
 }
@@ -897,7 +957,7 @@ fn missing_filter_boosters(
         let valid_action = if let [(key, value)] = entity.outputs.as_slice() {
             touch_event(key) == Some(false)
                 && matches!(
-                    parse_player_output(value, false)?,
+                    parse_player_output(value, false, false)?,
                     Some(PlayerOutput {
                         value: PlayerOutputValue::BaseVelocity(_),
                         ..
@@ -932,6 +992,173 @@ fn missing_filter_boosters(
     Ok(boosters)
 }
 
+fn add_source_teleports(
+    zones: &mut Vec<Zone>,
+    geometry: &Geometry,
+    entities: &[Entity<'_>],
+    timed: bool,
+    landmarks: bool,
+) -> Result<(), String> {
+    if !timed && !landmarks {
+        return Ok(());
+    }
+    let mut found_landmark = false;
+    for entity in entities {
+        if entity.get("classname") != Some("trigger_teleport") {
+            continue;
+        }
+        let filter_name = entity.get("filtername").filter(|name| !name.is_empty());
+        let landmark_name = entity.get("landmark").filter(|name| !name.is_empty());
+        if !(timed && filter_name.is_some() || landmarks && landmark_name.is_some()) {
+            continue;
+        }
+        if !static_client_trigger(entity)
+            || entity
+                .get("startdisabled")
+                .is_some_and(|value| value != "0")
+            || entity.model_index().is_none_or(|model| model == 0)
+            || entity
+                .get("targetname")
+                .is_some_and(|name| source_target_is_mutated(entities, name))
+            || !entity.outputs.is_empty()
+            || entity.get("velocitymode").is_some_and(|mode| mode != "0")
+            || (!timed && filter_name.is_some())
+            || (!landmarks && landmark_name.is_some())
+        {
+            return Err("Imported Source teleport must be an enabled static client trigger".into());
+        }
+        let target = entity
+            .get("target")
+            .ok_or("Imported Source teleport has no destination")?;
+        let destination = unique_source_entity(
+            entities,
+            target,
+            &["info_teleport_destination", "info_target"],
+        )?;
+        let position = destination
+            .origin()
+            .ok_or("Imported Source teleport has an invalid destination")?;
+        let landmark = match landmark_name {
+            Some("!activator") => None,
+            Some(name) => Some(
+                unique_source_entity(
+                    entities,
+                    name,
+                    &["info_landmark", "info_teleport_destination", "info_target"],
+                )?
+                .origin()
+                .ok_or("Imported Source landmark has an invalid origin")?,
+            ),
+            None => None,
+        };
+        let view = (landmark_name.is_none() && entity.get("resetang") != Some("0")).then(|| {
+            (
+                destination.yaw(),
+                destination.angles().x.to_radians(),
+                f64::from(destination.angles().y),
+            )
+        });
+        let filter = filter_name
+            .map(|name| source_activator_filter(entities, name))
+            .transpose()?;
+        let kind = ZoneKind::SourceTeleport(Box::new(SourceTeleport {
+            position,
+            landmark,
+            view,
+            filter,
+        }));
+        let model_index = entity
+            .model_index()
+            .ok_or("Imported Source teleport has no brush model")?;
+        let model = lookup(&geometry.models, model_index, "Source teleport model")?;
+        let brushes = geometry.model_brushes(model, entity.placement(), false)?;
+        if brushes.is_empty() {
+            return Err("Imported Source teleport has no brush".into());
+        }
+        zones.extend(brushes.into_iter().map(|brush| Zone {
+            brush,
+            kind: kind.clone(),
+        }));
+        found_landmark |= landmark_name.is_some();
+    }
+    if landmarks && !found_landmark {
+        return Err("No supported landmark teleports were found in the BSP".into());
+    }
+    Ok(())
+}
+
+fn source_activator_filter(entities: &[Entity<'_>], name: &str) -> Result<TriggerFilter, String> {
+    let filter = unique_source_entity(entities, name, &["filter_activator_name"])?;
+    let targetname = filter
+        .get("filtername")
+        .filter(|name| simple_entity_name(name))
+        .ok_or("Imported activator filter needs a literal player name")?;
+    let negated = match filter.get("negated") {
+        None | Some("0" | "Allow entities that match criteria") => false,
+        Some("1" | "Disallow entities that match criteria") => true,
+        _ => return Err("Imported activator filter has an unsupported negate value".into()),
+    };
+    if !filter.outputs.is_empty() {
+        return Err("Imported activator filter cannot have entity outputs".into());
+    }
+    Ok(TriggerFilter {
+        targetname: targetname.to_ascii_lowercase(),
+        negated,
+    })
+}
+
+fn unique_source_entity<'a, 'b>(
+    entities: &'a [Entity<'b>],
+    name: &str,
+    classes: &[&str],
+) -> Result<&'a Entity<'b>, String> {
+    if !simple_entity_name(name) {
+        return Err("Imported Source entity needs a literal target name".into());
+    }
+    let mut matches = entities.iter().filter(|entity| {
+        entity
+            .get("targetname")
+            .is_some_and(|target| target.eq_ignore_ascii_case(name))
+    });
+    let entity = matches
+        .next()
+        .ok_or_else(|| format!("Imported Source target {name} is missing"))?;
+    if matches.next().is_some()
+        || !entity
+            .get("classname")
+            .is_some_and(|class| classes.contains(&class))
+        || entity
+            .get("parentname")
+            .is_some_and(|parent| !parent.is_empty())
+        || source_target_is_mutated(entities, name)
+    {
+        return Err(format!(
+            "Imported Source target {name} is not a unique static entity"
+        ));
+    }
+    Ok(entity)
+}
+
+fn source_target_is_mutated(entities: &[Entity<'_>], name: &str) -> bool {
+    !name.is_empty()
+        && entities
+            .iter()
+            .flat_map(|entity| &entity.outputs)
+            .any(|(_, action)| {
+                let delimiter = if action.contains('\x1b') { '\x1b' } else { ',' };
+                let target = action
+                    .split(delimiter)
+                    .next()
+                    .unwrap_or_default()
+                    .trim_ascii();
+                target.eq_ignore_ascii_case(name)
+                    || target.strip_suffix('*').is_some_and(|prefix| {
+                        name.get(..prefix.len())
+                            .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+                    })
+            })
+}
+
 fn touch_event(name: &str) -> Option<bool> {
     if name.eq_ignore_ascii_case("OnStartTouch") {
         Some(true)
@@ -953,7 +1180,18 @@ fn static_client_trigger(entity: &Entity<'_>) -> bool {
             .is_some_and(|flags| flags & !DISALLOW_BOTS == CLIENTS)
 }
 
-fn parse_player_output(value: &str, gravity_outputs: bool) -> Result<Option<PlayerOutput>, String> {
+fn static_unnamed_trigger(entity: &Entity<'_>) -> bool {
+    static_client_trigger(entity)
+        && entity.get("targetname").is_none_or(str::is_empty)
+        && entity.get("startdisabled").is_none_or(|value| value == "0")
+        && entity.model_index().is_some_and(|model| model > 0)
+}
+
+fn parse_player_output(
+    value: &str,
+    gravity_outputs: bool,
+    name_outputs: bool,
+) -> Result<Option<PlayerOutput>, String> {
     let delimiter = if value.contains('\x1b') { '\x1b' } else { ',' };
     let mut parts = value.split(delimiter);
     let target = parts.next().unwrap_or_default().trim_ascii();
@@ -976,26 +1214,62 @@ fn parse_player_output(value: &str, gravity_outputs: bool) -> Result<Option<Play
         }
         return Ok(None);
     }
-    if !gravity_outputs || !key.eq_ignore_ascii_case("gravity") {
+    let gravity = gravity_outputs && key.eq_ignore_ascii_case("gravity");
+    let player_name = name_outputs && key.eq_ignore_ascii_case("targetname");
+    if !gravity && !player_name {
         return Ok(None);
     }
     if !target.eq_ignore_ascii_case("!activator") || count != "-1" || extra {
-        return Err("Imported gravity must target the activating player and be repeatable".into());
+        return Err("Imported output must target the activating player and be repeatable".into());
     }
-    let gravity = parse_gravity(parameter)?;
-    let seconds = delay
-        .parse::<f64>()
-        .ok()
-        .filter(|value| value.is_finite() && *value >= 0.0)
-        .ok_or("Invalid imported gravity delay")?;
+    let value = if gravity {
+        PlayerOutputValue::Gravity(parse_gravity(parameter)?)
+    } else {
+        if !simple_entity_name(parameter) {
+            return Err("Invalid imported player target name".into());
+        }
+        PlayerOutputValue::TargetName(parameter.to_ascii_lowercase())
+    };
+    Ok(Some(PlayerOutput {
+        delay_ticks: output_ticks(delay)?,
+        value,
+    }))
+}
+
+fn output_ticks(seconds: &str) -> Result<u32, String> {
+    let seconds = parse_trigger_seconds(seconds)?;
     let ticks = (seconds * TICK_HZ - 1e-6).ceil();
     if ticks > f64::from(u32::MAX) {
-        return Err("Imported gravity delay exceeds the tick range".into());
+        return Err("Imported trigger timing exceeds the tick range".into());
     }
-    Ok(Some(PlayerOutput {
-        delay_ticks: ticks as u32,
-        value: PlayerOutputValue::Gravity(gravity),
-    }))
+    Ok(ticks as u32)
+}
+
+fn trigger_wait_ticks(seconds: &str) -> Result<u32, String> {
+    let seconds = parse_trigger_seconds(seconds)?;
+    let wait = if seconds == 0.0 { 0.2 } else { seconds };
+    // Source entity thinks round to a tick. Delayed entity outputs have a separate queue.
+    let ticks = (wait * TICK_HZ).round();
+    if ticks > f64::from(u32::MAX) {
+        return Err("Imported trigger wait exceeds the tick range".into());
+    }
+    Ok((ticks as u32).max(1))
+}
+
+fn parse_trigger_seconds(value: &str) -> Result<f64, String> {
+    value
+        .parse::<f64>()
+        .ok()
+        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+        .ok_or_else(|| "Invalid imported trigger timing".into())
+}
+
+fn simple_entity_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'_' | b'-'))
 }
 
 fn parse_gravity(raw: &str) -> Result<f32, String> {
@@ -1019,7 +1293,7 @@ mod player_output_tests {
             "!ACTIVATOR,addoutput,BASEVELOCITY 2 3 400,0,-1",
             "!activator\x1bAddOutput\x1bbasevelocity 2 3 400\x1b0\x1b-1",
         ] {
-            let output = parse_player_output(action, false).unwrap().unwrap();
+            let output = parse_player_output(action, false, false).unwrap().unwrap();
             assert_eq!(output.delay_ticks, 0);
             assert!(matches!(
                 output.value,
@@ -1031,19 +1305,19 @@ mod player_output_tests {
             "other,AddOutput,basevelocity 0 0 400,0,-1",
             "!activator,AddOutput,basevelocity 0 0 400,0,1",
         ] {
-            assert!(parse_player_output(action, false).unwrap().is_none());
+            assert!(parse_player_output(action, false, false).unwrap().is_none());
         }
     }
 
     #[test]
     fn source_gravity_outputs_are_opt_in_and_delays_use_fixed_ticks() {
         let lift = "!activator ,AddOutput,gravity -0.6,0,-1";
-        assert!(parse_player_output(lift, false).unwrap().is_none());
-        let output = parse_player_output(lift, true).unwrap().unwrap();
+        assert!(parse_player_output(lift, false, false).unwrap().is_none());
+        let output = parse_player_output(lift, true, false).unwrap().unwrap();
         assert_eq!(output.delay_ticks, 0);
         assert!(matches!(output.value, PlayerOutputValue::Gravity(-0.6)));
 
-        let reset = parse_player_output("!activator,AddOutput,gravity 1,0.5,-1", true)
+        let reset = parse_player_output("!activator,AddOutput,gravity 1,0.5,-1", true, false)
             .unwrap()
             .unwrap();
         assert_eq!(reset.delay_ticks, 34);
@@ -1054,8 +1328,27 @@ mod player_output_tests {
             "!activator,AddOutput,gravity NaN,0,-1",
             "other,AddOutput,gravity -1,0,-1",
         ] {
-            assert!(parse_player_output(action, true).is_err());
+            assert!(parse_player_output(action, true, false).is_err());
         }
+    }
+
+    #[test]
+    fn source_timed_triggers_round_wait_and_dispatch_delays_independently() {
+        assert_eq!(trigger_wait_ticks("0").unwrap(), 13);
+        assert_eq!(trigger_wait_ticks("0.01").unwrap(), 1);
+        assert_eq!(trigger_wait_ticks("0.1").unwrap(), 7);
+        assert_eq!(trigger_wait_ticks("1").unwrap(), 67);
+        assert_eq!(output_ticks("0.09").unwrap(), 6);
+        assert_eq!(output_ticks("0.1").unwrap(), 7);
+        let action = parse_player_output(
+            "!activator,AddOutput,targetname Active,0.09,-1",
+            false,
+            true,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(action.delay_ticks, 6);
+        assert!(matches!(action.value, PlayerOutputValue::TargetName(name) if name == "active"));
     }
 
     #[test]

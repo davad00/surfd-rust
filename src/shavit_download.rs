@@ -1,4 +1,4 @@
-use crate::catalog::MapMode;
+use crate::catalog::{MapMode, ShavitDownload};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_json::ser::{Formatter, PrettyFormatter};
@@ -66,6 +66,10 @@ struct Sidecar<'a> {
     source_gravity_outputs: bool,
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     source_missing_filters: &'a [String],
+    #[serde(skip_serializing_if = "is_false")]
+    source_timed_triggers: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    source_landmark_teleports: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -111,10 +115,7 @@ pub(crate) fn normalize(
     raw: &[u8],
     bsp_sha256: &str,
     mode: MapMode,
-    tier: Option<u8>,
-    spawn_targets: &BTreeMap<String, String>,
-    gravity_outputs: bool,
-    missing_filters: &[String],
+    shavit: &ShavitDownload,
 ) -> Result<Vec<u8>, String> {
     if raw.len() > MAX_BYTES {
         return Err("Shavit zone data exceeds the timer limit".into());
@@ -126,7 +127,7 @@ pub(crate) fn normalize(
     let mut track_zones: BTreeMap<u16, TrackZones> = BTreeMap::new();
     let mut zones = Vec::with_capacity(input.len());
     for entry in input {
-        let zone = entry.normalize(spawn_targets)?;
+        let zone = entry.normalize(&shavit.spawn_targets)?;
         let track = track_zones.entry(zone.track).or_default();
         match zone.kind {
             ZoneKind::Start => {
@@ -185,12 +186,14 @@ pub(crate) fn normalize(
         bsp_sha256,
         mode,
         timer: "shavit",
-        tier,
+        tier: shavit.tier,
         tracks,
         zones,
         entity_output_fixes: [],
-        source_gravity_outputs: gravity_outputs,
-        source_missing_filters: missing_filters,
+        source_gravity_outputs: shavit.gravity_outputs,
+        source_missing_filters: &shavit.missing_filters,
+        source_timed_triggers: shavit.timed_triggers,
+        source_landmark_teleports: shavit.landmark_teleports,
     };
     let mut bytes = Vec::new();
     output
@@ -428,6 +431,10 @@ impl Formatter for ShavitFormatter {
 mod tests {
     use super::*;
 
+    fn options() -> ShavitDownload {
+        serde_json::from_value(serde_json::json!({ "sha256": "a".repeat(64) })).unwrap()
+    }
+
     #[test]
     fn formats_normalized_shavit_in_importer_field_order() {
         let raw = br#"[
@@ -436,17 +443,12 @@ mod tests {
             {"type":"stage","data":2,"form":1,"flags":3,"target":"0x20",
              "point_a":[20,20,10],"point_b":[18,18,0]}
         ]"#;
-        let targets = BTreeMap::from([("stage:0:2".into(), "stage_2".into())]);
-        let bytes = normalize(
-            raw,
-            &"a".repeat(64),
-            MapMode::Surf,
-            Some(3),
-            &targets,
-            false,
-            &[],
-        )
-        .unwrap();
+        let mut shavit = options();
+        shavit.tier = Some(3);
+        shavit
+            .spawn_targets
+            .insert("stage:0:2".into(), "stage_2".into());
+        let bytes = normalize(raw, &"a".repeat(64), MapMode::Surf, &shavit).unwrap();
         let output = String::from_utf8(bytes).unwrap();
         assert!(output.contains("\"bottom\": 0,\n      \"height\": 1e-7"));
         assert!(output.contains("\"height\": 0.19999999999999998"));
@@ -454,19 +456,13 @@ mod tests {
             "\"height\": 10,\n      \"index\": 2,\n      \"hook_hammerid\": 32,\n      \"target\": \"stage_2\""
         ));
         assert!(output.ends_with("\n  ],\n  \"entity_output_fixes\": []\n}\n"));
-        let filters = ["fix".to_owned()];
-        let extended = normalize(
-            raw,
-            &"a".repeat(64),
-            MapMode::Surf,
-            Some(3),
-            &targets,
-            true,
-            &filters,
-        )
-        .unwrap();
+        shavit.gravity_outputs = true;
+        shavit.missing_filters.push("fix".into());
+        shavit.timed_triggers = true;
+        shavit.landmark_teleports = true;
+        let extended = normalize(raw, &"a".repeat(64), MapMode::Surf, &shavit).unwrap();
         assert!(String::from_utf8(extended).unwrap().ends_with(
-            "\n  \"entity_output_fixes\": [],\n  \"source_gravity_outputs\": true,\n  \"source_missing_filters\": [\n    \"fix\"\n  ]\n}\n"
+            "\n  \"entity_output_fixes\": [],\n  \"source_gravity_outputs\": true,\n  \"source_missing_filters\": [\n    \"fix\"\n  ],\n  \"source_timed_triggers\": true,\n  \"source_landmark_teleports\": true\n}\n"
         ));
         let json: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(json["tracks"][0]["checkpoints_required"], true);
@@ -481,17 +477,8 @@ mod tests {
             {"type":"end","point_a":[32,32,0],"point_b":[36,36,8]},
             {"type":"checkpoint","index":2,"point_a":[16,16,0],"point_b":[20,20,8]}
         ]"#;
-        let normalize_input = |raw: &[u8]| {
-            normalize(
-                raw,
-                &"a".repeat(64),
-                MapMode::Bhop,
-                None,
-                &BTreeMap::new(),
-                false,
-                &[],
-            )
-        };
+        let shavit = options();
+        let normalize_input = |raw: &[u8]| normalize(raw, &"a".repeat(64), MapMode::Bhop, &shavit);
         assert!(normalize_input(raw).unwrap_err().contains("missing"));
         let mut input: Vec<Value> = serde_json::from_slice(raw).unwrap();
         input[2]["index"] = Value::from(1);

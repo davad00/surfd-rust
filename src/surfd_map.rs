@@ -916,6 +916,7 @@ impl RawOutputZone {
         self.bounds.add(
             ZoneKind::PlayerOutput(Box::new(PlayerOutputZone {
                 index,
+                on_trigger: None,
                 filter: self.filter.as_ref().map(RawFilter::convert),
                 filter_multi: self
                     .filter_multi
@@ -1109,6 +1110,7 @@ impl Collision {
             catalog_revision: None,
             bonus_routes: Vec::new(),
             map_triggers: MapTriggers {
+                source_timed_triggers: false,
                 source_world_limit: None,
                 source_mode: None,
                 spawn_pitch: Some(initial.pitch),

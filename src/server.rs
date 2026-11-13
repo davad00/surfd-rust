@@ -1099,10 +1099,10 @@ impl Room {
             return false;
         }
         if capabilities.source_map_rules < self.min_source_rules {
-            let version = if self.min_source_rules == 1 {
-                "0.1.8"
-            } else {
-                env!("CARGO_PKG_VERSION")
+            let version = match self.min_source_rules {
+                1 => "0.1.8",
+                2 => "0.1.9",
+                _ => env!("CARGO_PKG_VERSION"),
             };
             self.reject(
                 id,
