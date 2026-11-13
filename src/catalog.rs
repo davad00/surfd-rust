@@ -105,11 +105,12 @@ pub struct CatalogEntry {
     pub download: Option<SourceDownload>,
 }
 
-pub const SOURCE_MAP_RULES: u8 = 5;
+pub const SOURCE_MAP_RULES: u8 = 6;
 pub(crate) const SOURCE_RULES_NORMALIZED_OUTPUTS: u8 = 2;
 pub(crate) const SOURCE_RULES_TIMED_TRIGGERS: u8 = 3;
 pub(crate) const SOURCE_RULES_PLAYER_FILTERS: u8 = 4;
 pub(crate) const SOURCE_RULES_MOVEMENT_SETTINGS: u8 = 5;
+pub(crate) const SOURCE_RULES_TICK_INTERVAL: u8 = 6;
 
 fn is_zero(value: &u8) -> bool {
     *value == 0
@@ -158,6 +159,8 @@ pub struct ShavitDownload {
     pub landmark_teleports: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub player_filters: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tick_interval_ms: Option<u8>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -333,6 +336,10 @@ pub fn parse_source_catalog(data: &[u8]) -> Result<CommunityCatalog, String> {
                         && entry.min_source_rules < SOURCE_RULES_TIMED_TRIGGERS)
                     || (shavit.player_filters
                         && entry.min_source_rules < SOURCE_RULES_PLAYER_FILTERS)
+                    || shavit.tick_interval_ms.is_some_and(|ms| {
+                        !matches!(ms, 10 | 15)
+                            || (ms == 10 && entry.min_source_rules < SOURCE_RULES_TICK_INTERVAL)
+                    })
             })
         {
             return Err(format!("Invalid community map entry: {}", entry.id));

@@ -12,15 +12,15 @@ use sha2::{Digest, Sha256};
 use super::{Entity, Geometry, lookup, parse_vector, sidecar_path, source_axes};
 use crate::catalog::{
     CatalogEntry, MapMode, SOURCE_RULES_MOVEMENT_SETTINGS, SOURCE_RULES_NORMALIZED_OUTPUTS,
-    SOURCE_RULES_PLAYER_FILTERS, SOURCE_RULES_TIMED_TRIGGERS, valid_source_missing_filters,
+    SOURCE_RULES_PLAYER_FILTERS, SOURCE_RULES_TICK_INTERVAL, SOURCE_RULES_TIMED_TRIGGERS,
+    valid_source_missing_filters,
 };
 use crate::course::{
     BonusRoute, Brush, Course, Plane, PlayerOutput, PlayerOutputValue, PlayerOutputZone,
     PracticeSpawn, SourceTeleport, TimedPlayerAction, TimedPlayerOutput, TriggerFilter, Zone,
     ZoneKind,
 };
-use crate::movement::TICK_HZ;
-use crate::rules::SourceMovementSettings;
+use crate::rules::{SourceMovementSettings, TickInterval};
 
 const MAX_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -41,6 +41,32 @@ pub(crate) struct SourceTimer {
 }
 
 impl SourceTimer {
+    #[cfg(test)]
+    pub(crate) fn test_with_interval(start: Brush, interval: TickInterval) -> Self {
+        Self {
+            revision: [10; 32],
+            max_velocity: None,
+            movement_settings: SourceMovementSettings {
+                tick_interval_ms: Some(interval),
+                ..Default::default()
+            },
+            mode: MapMode::Bhop,
+            tracks: BTreeMap::from([(
+                0,
+                Track {
+                    id: 0,
+                    checkpoints_required: true,
+                    checkpoints_ordered: true,
+                    limit_start_ground_speed: false,
+                    start_speed_cap: None,
+                    bhop_enabled: true,
+                    start_regions: vec![(start, None)],
+                },
+            )]),
+            bhop_regions: Vec::new(),
+        }
+    }
+
     pub(crate) fn mode(&self) -> MapMode {
         self.mode
     }
@@ -298,6 +324,8 @@ impl Sidecar {
             || ((self.source_timed_triggers || self.source_landmark_teleports)
                 && entry.min_source_rules < SOURCE_RULES_TIMED_TRIGGERS)
             || (self.source_player_filters && entry.min_source_rules < SOURCE_RULES_PLAYER_FILTERS)
+            || (self.source_movement.tick_interval() != TickInterval::Legacy15Ms
+                && entry.min_source_rules < SOURCE_RULES_TICK_INTERVAL)
             || ((self.source_movement.changes_defaults()
                 || self.source_prestart_target.is_some()
                 || self.source_speedmod
@@ -318,6 +346,11 @@ impl Sidecar {
                         || shavit.timed_triggers != self.source_timed_triggers
                         || shavit.landmark_teleports != self.source_landmark_teleports
                         || shavit.player_filters != self.source_player_filters
+                        || shavit
+                            .tick_interval_ms
+                            .map(TickInterval::try_from)
+                            .transpose()
+                            != Ok(self.source_movement.tick_interval_ms)
                 })
         {
             return Err("Imported entity outputs differ from the ranked map rules".into());
@@ -832,6 +865,7 @@ fn add_player_outputs(
 ) -> Result<(), String> {
     let fixes = &timer.entity_output_fixes;
     let gravity_outputs = timer.source_gravity_outputs;
+    let tick_hz = entity_tick_hz(timer.source_movement.tick_interval());
     if fixes
         .iter()
         .any(|fix| touch_event(&fix.from_key).is_none() || touch_event(&fix.to_key).is_none())
@@ -902,7 +936,7 @@ fn add_player_outputs(
         let mut triggered = Vec::new();
         for &(mut key, value) in &entity.outputs {
             if timer.source_timed_triggers && key.eq_ignore_ascii_case("OnTrigger") {
-                if let Some(action) = parse_player_output(value, gravity_outputs, true)? {
+                if let Some(action) = parse_player_output(value, gravity_outputs, true, tick_hz)? {
                     if !matches!(
                         action.value,
                         PlayerOutputValue::TargetName(_) | PlayerOutputValue::Gravity(_)
@@ -915,7 +949,7 @@ fn add_player_outputs(
                         .nth(3)
                         .ok_or("Imported timed output has no delay")?;
                     let seconds = parse_trigger_seconds(delay)?;
-                    let delay_from_tick_ns = ((seconds - f64::from(action.delay_ticks) / TICK_HZ)
+                    let delay_from_tick_ns = ((seconds - f64::from(action.delay_ticks) / tick_hz)
                         * 1_000_000_000.0)
                         .round() as i32;
                     triggered.push(TimedPlayerAction {
@@ -926,7 +960,7 @@ fn add_player_outputs(
                 continue;
             }
             let Some(action) =
-                parse_player_output(value, gravity_outputs, timer.source_player_filters)?
+                parse_player_output(value, gravity_outputs, timer.source_player_filters, tick_hz)?
             else {
                 continue;
             };
@@ -1003,7 +1037,7 @@ fn add_player_outputs(
             {
                 return Err("Imported timed player actions need a static trigger_multiple".into());
             }
-            let repeat_ticks = trigger_wait_ticks(entity.get("wait").unwrap_or("0"))?;
+            let repeat_ticks = trigger_wait_ticks(entity.get("wait").unwrap_or("0"), tick_hz)?;
             output.on_trigger = Some(TimedPlayerOutput {
                 repeat_ticks,
                 actions: triggered,
@@ -1076,7 +1110,7 @@ fn missing_filter_boosters(
         let valid_action = if let [(key, value)] = entity.outputs.as_slice() {
             touch_event(key) == Some(false)
                 && matches!(
-                    parse_player_output(value, false, false)?,
+                    parse_player_output(value, false, false, TickInterval::Legacy15Ms.hz())?,
                     Some(PlayerOutput {
                         value: PlayerOutputValue::BaseVelocity(_),
                         ..
@@ -1428,6 +1462,7 @@ fn parse_player_output(
     value: &str,
     gravity_outputs: bool,
     name_outputs: bool,
+    tick_hz: f64,
 ) -> Result<Option<PlayerOutput>, String> {
     let delimiter = if value.contains('\x1b') { '\x1b' } else { ',' };
     let mut parts = value.split(delimiter);
@@ -1468,25 +1503,33 @@ fn parse_player_output(
         PlayerOutputValue::TargetName(parameter.to_ascii_lowercase())
     };
     Ok(Some(PlayerOutput {
-        delay_ticks: output_ticks(delay)?,
+        delay_ticks: output_ticks(delay, tick_hz)?,
         value,
     }))
 }
 
-fn output_ticks(seconds: &str) -> Result<u32, String> {
+fn output_ticks(seconds: &str, tick_hz: f64) -> Result<u32, String> {
     let seconds = parse_trigger_seconds(seconds)?;
-    let ticks = (seconds * TICK_HZ - 1e-6).ceil();
+    let ticks = (seconds * tick_hz - 1e-6).ceil();
     if ticks > f64::from(u32::MAX) {
         return Err("Imported trigger timing exceeds the tick range".into());
     }
     Ok(ticks as u32)
 }
 
-fn trigger_wait_ticks(seconds: &str) -> Result<u32, String> {
+fn entity_tick_hz(interval: TickInterval) -> f64 {
+    match interval {
+        TickInterval::Legacy15Ms => interval.hz(),
+        // Use the nominal rate for decimal entity delays so exact tick boundaries stay exact.
+        TickInterval::Source10Ms => 100.0,
+    }
+}
+
+fn trigger_wait_ticks(seconds: &str, tick_hz: f64) -> Result<u32, String> {
     let seconds = parse_trigger_seconds(seconds)?;
     let wait = if seconds == 0.0 { 0.2 } else { seconds };
     // Source entity thinks round to a tick. Delayed entity outputs have a separate queue.
-    let ticks = (wait * TICK_HZ).round();
+    let ticks = (wait * tick_hz).round();
     if ticks > f64::from(u32::MAX) {
         return Err("Imported trigger wait exceeds the tick range".into());
     }
@@ -1571,13 +1614,16 @@ mod player_output_tests {
 
     #[test]
     fn source_boosters_accept_case_insensitive_base_velocity_keys() {
+        let tick_hz = TickInterval::Legacy15Ms.hz();
         for action in [
             "!activator,AddOutput,Basevelocity 2 3 400,0,-1",
             "!activator,AddOutput,basevelocity 2 3 400,0,-1",
             "!ACTIVATOR,addoutput,BASEVELOCITY 2 3 400,0,-1",
             "!activator\x1bAddOutput\x1bbasevelocity 2 3 400\x1b0\x1b-1",
         ] {
-            let output = parse_player_output(action, false, false).unwrap().unwrap();
+            let output = parse_player_output(action, false, false, tick_hz)
+                .unwrap()
+                .unwrap();
             assert_eq!(output.delay_ticks, 0);
             assert!(matches!(
                 output.value,
@@ -1589,21 +1635,37 @@ mod player_output_tests {
             "other,AddOutput,basevelocity 0 0 400,0,-1",
             "!activator,AddOutput,basevelocity 0 0 400,0,1",
         ] {
-            assert!(parse_player_output(action, false, false).unwrap().is_none());
+            assert!(
+                parse_player_output(action, false, false, tick_hz)
+                    .unwrap()
+                    .is_none()
+            );
         }
     }
 
     #[test]
     fn source_gravity_outputs_are_opt_in_and_delays_use_fixed_ticks() {
+        let tick_hz = TickInterval::Legacy15Ms.hz();
         let lift = "!activator ,AddOutput,gravity -0.6,0,-1";
-        assert!(parse_player_output(lift, false, false).unwrap().is_none());
-        let output = parse_player_output(lift, true, false).unwrap().unwrap();
+        assert!(
+            parse_player_output(lift, false, false, tick_hz)
+                .unwrap()
+                .is_none()
+        );
+        let output = parse_player_output(lift, true, false, tick_hz)
+            .unwrap()
+            .unwrap();
         assert_eq!(output.delay_ticks, 0);
         assert!(matches!(output.value, PlayerOutputValue::Gravity(-0.6)));
 
-        let reset = parse_player_output("!activator,AddOutput,gravity 1,0.5,-1", true, false)
-            .unwrap()
-            .unwrap();
+        let reset = parse_player_output(
+            "!activator,AddOutput,gravity 1,0.5,-1",
+            true,
+            false,
+            tick_hz,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(reset.delay_ticks, 34);
         assert!(matches!(reset.value, PlayerOutputValue::Gravity(1.0)));
         for action in [
@@ -1612,27 +1674,36 @@ mod player_output_tests {
             "!activator,AddOutput,gravity NaN,0,-1",
             "other,AddOutput,gravity -1,0,-1",
         ] {
-            assert!(parse_player_output(action, true, false).is_err());
+            assert!(parse_player_output(action, true, false, tick_hz).is_err());
         }
     }
 
     #[test]
     fn source_timed_triggers_round_wait_and_dispatch_delays_independently() {
-        assert_eq!(trigger_wait_ticks("0").unwrap(), 13);
-        assert_eq!(trigger_wait_ticks("0.01").unwrap(), 1);
-        assert_eq!(trigger_wait_ticks("0.1").unwrap(), 7);
-        assert_eq!(trigger_wait_ticks("1").unwrap(), 67);
-        assert_eq!(output_ticks("0.09").unwrap(), 6);
-        assert_eq!(output_ticks("0.1").unwrap(), 7);
+        let tick_hz = TickInterval::Legacy15Ms.hz();
+        assert_eq!(trigger_wait_ticks("0", tick_hz).unwrap(), 13);
+        assert_eq!(trigger_wait_ticks("0.01", tick_hz).unwrap(), 1);
+        assert_eq!(trigger_wait_ticks("0.1", tick_hz).unwrap(), 7);
+        assert_eq!(trigger_wait_ticks("1", tick_hz).unwrap(), 67);
+        assert_eq!(output_ticks("0.09", tick_hz).unwrap(), 6);
+        assert_eq!(output_ticks("0.1", tick_hz).unwrap(), 7);
         let action = parse_player_output(
             "!activator,AddOutput,targetname Active,0.09,-1",
             false,
             true,
+            tick_hz,
         )
         .unwrap()
         .unwrap();
         assert_eq!(action.delay_ticks, 6);
         assert!(matches!(action.value, PlayerOutputValue::TargetName(name) if name == "active"));
+
+        let tick_hz = entity_tick_hz(TickInterval::Source10Ms);
+        assert_eq!(trigger_wait_ticks("0", tick_hz).unwrap(), 20);
+        assert_eq!(trigger_wait_ticks("0.012", tick_hz).unwrap(), 1);
+        assert_eq!(output_ticks("0.012", tick_hz).unwrap(), 2);
+        assert_eq!(output_ticks("1", tick_hz).unwrap(), 100);
+        assert_eq!(output_ticks("0.1", tick_hz).unwrap(), 10);
     }
 
     #[test]

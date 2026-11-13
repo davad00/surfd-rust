@@ -277,6 +277,7 @@ pub(crate) fn step_with_index(
     candidates: &mut Vec<usize>,
     rules: StepRules<'_>,
 ) -> MovementResult {
+    let dt = rules.movement.tick_interval.seconds();
     let mut collision = CollisionWorld {
         brushes,
         index: index.filter(|index| index.covers(brushes)),
@@ -287,7 +288,7 @@ pub(crate) fn step_with_index(
         dt: rules
             .no_jump_scale
             .or(rules.movement_scale)
-            .map_or(TICK_SECONDS, |scale| TICK_SECONDS * scale),
+            .map_or(dt, |scale| dt * scale),
         friction: rules.friction,
         contact_rules: BrushContactRules {
             exact_bonus_contacts: rules.exact_bonus_contacts,
@@ -1533,5 +1534,33 @@ mod tests {
         );
         assert!(player.grounded);
         assert!((player.velocity.x - 197.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn source_fixed_interval_applies_gravity_and_displacement_per_tick() {
+        use crate::rules::TickInterval;
+
+        for (interval, fall, speed) in [
+            (TickInterval::Legacy15Ms, 0.09, 12.0),
+            (TickInterval::Source10Ms, 0.04, 8.0),
+        ] {
+            let mut player = Player::new(Vec3::ZERO);
+            step_with_index(
+                &mut player,
+                MoveInput::default(),
+                &[],
+                None,
+                &mut Vec::new(),
+                StepRules {
+                    movement: MovementRules {
+                        tick_interval: interval,
+                        ..MovementRules::default()
+                    },
+                    ..Default::default()
+                },
+            );
+            assert!((player.position.y + fall).abs() < 1e-6);
+            assert!((player.velocity.y + speed).abs() < 1e-6);
+        }
     }
 }

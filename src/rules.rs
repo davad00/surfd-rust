@@ -7,7 +7,48 @@ const DEFAULT_GROUND_ACCELERATION: f32 = 5.0;
 const DEFAULT_GROUND_FRICTION: f32 = 4.0;
 const DEFAULT_STOP_SPEED: f32 = 75.0;
 
-/// The shared 15 ms movement preset with the course's scalar overrides.
+/// Fixed simulation interval shared by movement, map outputs, and replay clocks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "u8")]
+pub enum TickInterval {
+    #[default]
+    Legacy15Ms,
+    Source10Ms,
+}
+
+impl TickInterval {
+    pub const fn millis(self) -> u8 {
+        match self {
+            Self::Legacy15Ms => 15,
+            Self::Source10Ms => 10,
+        }
+    }
+
+    pub const fn seconds(self) -> f32 {
+        match self {
+            Self::Legacy15Ms => crate::movement::TICK_SECONDS,
+            Self::Source10Ms => 0.010,
+        }
+    }
+
+    pub const fn hz(self) -> f64 {
+        1.0 / self.seconds() as f64
+    }
+}
+
+impl TryFrom<u8> for TickInterval {
+    type Error = &'static str;
+
+    fn try_from(millis: u8) -> Result<Self, Self::Error> {
+        match millis {
+            15 => Ok(Self::Legacy15Ms),
+            10 => Ok(Self::Source10Ms),
+            _ => Err("Source tick_interval_ms must be 10 or 15"),
+        }
+    }
+}
+
+/// Movement preset with the course's authored overrides.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MovementRules {
     pub max_velocity: f32,
@@ -17,6 +58,7 @@ pub struct MovementRules {
     pub ground_acceleration: f32,
     pub ground_friction: f32,
     pub stop_speed: f32,
+    pub tick_interval: TickInterval,
 }
 
 #[derive(Clone, Copy, Default, Deserialize)]
@@ -27,9 +69,14 @@ pub(crate) struct SourceMovementSettings {
     pub ground_acceleration: Option<f32>,
     pub ground_friction: Option<f32>,
     pub stop_speed: Option<f32>,
+    pub tick_interval_ms: Option<TickInterval>,
 }
 
 impl SourceMovementSettings {
+    pub(crate) fn tick_interval(self) -> TickInterval {
+        self.tick_interval_ms.unwrap_or_default()
+    }
+
     pub(crate) fn validate(self) -> Result<(), String> {
         for (name, value, max) in [
             ("gravity", self.gravity, 32_768.0),
@@ -61,6 +108,7 @@ impl SourceMovementSettings {
                 .unwrap_or(rules.ground_acceleration),
             ground_friction: self.ground_friction.unwrap_or(rules.ground_friction),
             stop_speed: self.stop_speed.unwrap_or(rules.stop_speed),
+            tick_interval: self.tick_interval(),
             ..rules
         }
     }
@@ -117,6 +165,7 @@ impl Default for MovementRules {
             ground_acceleration: DEFAULT_GROUND_ACCELERATION,
             ground_friction: DEFAULT_GROUND_FRICTION,
             stop_speed: DEFAULT_STOP_SPEED,
+            tick_interval: TickInterval::default(),
         }
     }
 }
@@ -197,7 +246,7 @@ impl MovementRules {
     }
 
     pub(crate) fn half_gravity_step(self) -> f32 {
-        self.gravity * crate::movement::TICK_SECONDS * 0.5
+        self.gravity * self.tick_interval.seconds() * 0.5
     }
 }
 
@@ -243,5 +292,15 @@ mod tests {
                 .is_err()
         );
         assert!(parse(r#"{"tickrate":100}"#).is_err());
+        let source_tick = parse(r#"{"tick_interval_ms":10}"#).unwrap();
+        assert!(source_tick.changes_defaults());
+        assert_eq!(source_tick.tick_interval(), TickInterval::Source10Ms);
+        assert_eq!(source_tick.apply(defaults).half_gravity_step(), 4.0);
+        assert!(
+            !parse(r#"{"tick_interval_ms":15}"#)
+                .unwrap()
+                .changes_defaults()
+        );
+        assert!(parse(r#"{"tick_interval_ms":14}"#).is_err());
     }
 }

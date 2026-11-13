@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     course::Course,
-    movement::{MoveInput, TICK_SECONDS},
+    movement::MoveInput,
     reference_ghost::ReferenceGhostPose,
-    rules::PhysicsProfile,
+    rules::{PhysicsProfile, TickInterval},
     session::{RunOptions, RunPhase, Session},
 };
 
@@ -234,7 +234,10 @@ impl Playback {
 
     pub fn span_elapsed(&self) -> Option<f64> {
         let (start, end) = self.span?;
-        Some((self.cursor as f64 - start).clamp(0.0, end - start) / crate::movement::TICK_HZ)
+        Some(
+            (self.cursor as f64 - start).clamp(0.0, end - start)
+                / self.session.tick_interval().hz(),
+        )
     }
 
     pub fn displayed_input(&self) -> MoveInput {
@@ -273,6 +276,7 @@ pub struct NativeGhost {
     frames: Vec<GhostFrame>,
     start_tick: f64,
     end_tick: f64,
+    tick_interval: TickInterval,
 }
 
 /// Builds the same pose track over bounded portions of several application frames.
@@ -339,13 +343,16 @@ impl NativeGhostPreparation {
                     .session
                     .replay_start_tick(playback.cursor)
                     .ok_or(ReplayError::Incomplete)?;
-                let end_tick = (start_tick + playback.session.elapsed / f64::from(TICK_SECONDS))
-                    .min(playback.cursor as f64);
+                let tick_interval = playback.session.tick_interval();
+                let end_tick = (start_tick
+                    + playback.session.elapsed / f64::from(tick_interval.seconds()))
+                .min(playback.cursor as f64);
                 self.playback = None;
                 return Ok(Some(NativeGhost {
                     frames: std::mem::take(&mut self.frames),
                     start_tick,
                     end_tick,
+                    tick_interval,
                 }));
             }
         }
@@ -380,8 +387,8 @@ impl NativeGhost {
         if !elapsed.is_finite() {
             return None;
         }
-        let tick =
-            (self.start_tick + elapsed.max(0.0) / f64::from(TICK_SECONDS)).min(self.end_tick);
+        let tick = (self.start_tick + elapsed.max(0.0) / f64::from(self.tick_interval.seconds()))
+            .min(self.end_tick);
         let nearest = tick.round();
         // The seconds-to-ticks conversion can round an exact frame across a teleport boundary.
         let tick = if (tick - nearest).abs() <= 1e-9 {
@@ -544,6 +551,47 @@ mod tests {
             }
         }
         panic!("flat fixture failed to complete");
+    }
+
+    #[test]
+    fn source_replay_keeps_the_course_timestep_for_timing_playback_and_ghosts() {
+        let mut legacy_course = course();
+        legacy_course.catalog_revision = Some("legacy-fixture".to_owned());
+        let (legacy, _) = finish(&legacy_course, None);
+        let mut source_course = course();
+        source_course.catalog_revision = Some("source-fixture".to_owned());
+        source_course.map_triggers.source_timer =
+            Some(crate::source_bsp::SourceTimer::test_with_interval(
+                source_course.zones[0].brush.clone(),
+                TickInterval::Source10Ms,
+            ));
+        let (replay, elapsed) = finish(&source_course, None);
+        assert!(replay.commands.len() > legacy.commands.len());
+        let verified = verify_ranked(&source_course, &replay).unwrap();
+        assert_eq!(verified.time_us, (elapsed * 1e6).round() as u64);
+        assert_eq!(verified.splits_us.len(), 1);
+        assert_eq!(
+            verify_ranked(&legacy_course, &replay),
+            Err(ReplayError::Course)
+        );
+        assert_eq!(
+            verify_ranked(&source_course, &legacy),
+            Err(ReplayError::Course)
+        );
+
+        let ghost = NativeGhost::new(&source_course, replay.clone()).unwrap();
+        let sample_tick = ghost.start_tick.ceil() as usize + 1;
+        let dt = f64::from(TickInterval::Source10Ms.seconds());
+        let sample_time = (sample_tick as f64 - ghost.start_tick) * dt;
+        assert_eq!(
+            ghost.sample(sample_time).unwrap().position,
+            ghost.frames[sample_tick].pose.position
+        );
+
+        let mut playback = Playback::new(&source_course, replay).unwrap();
+        playback.set_span(&source_course, 1.25, 4.75).unwrap();
+        while playback.tick(&source_course) {}
+        assert!((playback.span_elapsed().unwrap() - 3.5 * dt).abs() < 1e-12);
     }
 
     #[test]
@@ -718,7 +766,8 @@ mod tests {
             .skip(1)
             .find(|(_, frame)| frame.snap)
             .expect("the replay should cross the teleport");
-        let mid_teleport = (teleport as f64 - 0.5 - ghost.start_tick) * f64::from(TICK_SECONDS);
+        let mid_teleport =
+            (teleport as f64 - 0.5 - ghost.start_tick) * f64::from(crate::movement::TICK_SECONDS);
         assert_eq!(ghost.sample(mid_teleport), Some(destination.pose));
 
         let mut immediate = Session::new(&course);

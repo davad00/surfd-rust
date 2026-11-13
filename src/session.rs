@@ -13,11 +13,10 @@ use crate::{
         PlayerOutputValue, PracticeSpawn, Zone, ZoneKind,
     },
     movement::{
-        GroundCheck, MoveInput, MovementSegment, Player, RUN_SPEED, StepRules, TICK_HZ,
-        step_with_index,
+        GroundCheck, MoveInput, MovementSegment, Player, RUN_SPEED, StepRules, step_with_index,
     },
     replay::{MAX_COMMANDS, REPLAY_VERSION, RunReplay, TickCommand},
-    rules::{MovementRules, PhysicsProfile},
+    rules::{MovementRules, PhysicsProfile, TickInterval},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -161,7 +160,7 @@ pub struct Session {
     commands: Option<Vec<TickCommand>>,
     recording_overflow: bool,
     start_jumps: u32,
-    start_ground_time: f32,
+    start_ground_millis: u8,
     start_region: Option<u16>,
     previous_yaw: f32,
     sync_matching: u32,
@@ -218,7 +217,7 @@ impl Session {
             commands: Some(Vec::new()),
             recording_overflow: false,
             start_jumps: 0,
-            start_ground_time: 0.0,
+            start_ground_millis: 0,
             start_region: None,
             previous_yaw: course.spawn_yaw,
             sync_matching: 0,
@@ -253,6 +252,10 @@ impl Session {
     fn physics_profile(&self, course: &Course) -> PhysicsProfile {
         self.playback_profile
             .unwrap_or_else(|| course.physics_profile_for(self.bonus))
+    }
+
+    pub fn tick_interval(&self) -> TickInterval {
+        self.rules.tick_interval
     }
 
     fn uses_precise_triggers(&self, course: &Course) -> bool {
@@ -549,7 +552,7 @@ impl Session {
         self.clear_run();
         self.last_teleport = None;
         self.start_jumps = 0;
-        self.start_ground_time = 0.0;
+        self.start_ground_millis = 0;
         self.start_region = None;
         self.previous_yaw = self.spawn_yaw(course);
         self.ranked_valid = true;
@@ -612,7 +615,7 @@ impl Session {
         self.player = Player::at_stage_restart(spawn.position, self.rules);
         self.mark_pose_discontinuity();
         self.start_jumps = 0;
-        self.start_ground_time = 0.0;
+        self.start_ground_millis = 0;
         self.start_region = None;
         self.previous_yaw = spawn.yaw;
         self.pitch_override = Some(spawn.pitch);
@@ -698,7 +701,7 @@ impl Session {
             self.triggers.pending_push = None;
             self.triggers.base_velocity = None;
             self.start_jumps = 0;
-            self.start_ground_time = 0.0;
+            self.start_ground_millis = 0;
             self.start_region = None;
             self.player.position = handoff.position;
             self.mark_pose_discontinuity();
@@ -769,7 +772,7 @@ impl Session {
             let region = Some(u16::from(matches!(start_kind, ZoneKind::StageStart(_))));
             if self.start_region != region {
                 self.start_jumps = 0;
-                self.start_ground_time = 0.0;
+                self.start_ground_millis = 0;
                 self.start_region = region;
             }
         }
@@ -898,12 +901,13 @@ impl Session {
             && self.player.grounded
             && !input.jump
             && speed <= RUN_SPEED + 0.01;
-        self.start_ground_time = if settled {
-            self.start_ground_time + 0.015
+        self.start_ground_millis = if settled {
+            self.start_ground_millis
+                .saturating_add(self.tick_interval().millis())
         } else {
-            0.0
+            0
         };
-        if self.start_ground_time >= 0.1 {
+        if self.start_ground_millis >= 100 {
             self.start_jumps = 0;
         }
 
@@ -1028,7 +1032,7 @@ impl Session {
                             self.triggers.base_velocity = None;
                         }
                         self.start_jumps = 0;
-                        self.start_ground_time = 0.0;
+                        self.start_ground_millis = 0;
                         self.start_region = None;
                     }
                     self.last_teleport = Some(index);
@@ -1246,7 +1250,7 @@ impl Session {
         if let Some(push) = push {
             self.triggers.base_velocity = Some(push.with_y(0.0));
         } else if let Some(base) = self.triggers.base_velocity.take() {
-            let dt = TICK_HZ.recip() as f32 * no_jump_scale.unwrap_or(1.0);
+            let dt = self.tick_interval().seconds() * no_jump_scale.unwrap_or(1.0);
             let mut impulse = base * (1.0 + dt * 0.5);
             if bonus.is_some_and(|rules| rules.impulse_limit)
                 && impulse.abs().max_element() >= 4000.0
@@ -1475,9 +1479,10 @@ impl Session {
     }
 
     fn time_at(&self, at: f64, running_from: f64) -> f64 {
+        let tick_hz = self.tick_interval().hz();
         self.run_start_tick.map_or_else(
-            || self.elapsed + (at - running_from) / TICK_HZ,
-            |start| (self.triggers.tick.saturating_sub(1) as f64 + at - start) / TICK_HZ,
+            || self.elapsed + (at - running_from) / tick_hz,
+            |start| (self.triggers.tick.saturating_sub(1) as f64 + at - start) / tick_hz,
         )
     }
 
@@ -1490,6 +1495,7 @@ impl Session {
             return;
         }
         let hull = TriggerHull::for_player(&self.player, self.uses_precise_triggers(course));
+        let tick_hz = self.tick_interval().hz();
         let clock = &mut self.stage_clock;
         let tick = self.triggers.tick as f64;
         let current = self.player.position;
@@ -1501,7 +1507,7 @@ impl Session {
             } else {
                 self.splits.get(index).copied()
             }
-            .map_or(f64::INFINITY, |elapsed| run_start + elapsed * TICK_HZ);
+            .map_or(f64::INFINITY, |elapsed| run_start + elapsed * tick_hz);
             let mut end_tick = stage_end;
             let mut clamp_after = end_tick;
             if !clock.awaiting_handoff {
@@ -1578,7 +1584,7 @@ impl Session {
                 }
             }
             if let Some(start_tick) = clock.latest_start {
-                let time_us = ((end_tick - start_tick) / TICK_HZ * 1e6).round() as u64;
+                let time_us = ((end_tick - start_tick) / tick_hz * 1e6).round() as u64;
                 if time_us > 0 {
                     clock.results.push(StageResult {
                         stage: (index + 1) as u16,
@@ -2338,14 +2344,14 @@ mod tests {
         assert_eq!(session.pitch_override(), Some(-0.4));
         assert_eq!(session.source_yaw_override(), Some(107.188734536));
         assert_eq!(session.player.position, Vec3::ZERO);
-        assert!((session.elapsed - before - TICK_HZ.recip()).abs() < 1e-9);
+        assert!((session.elapsed - before - crate::movement::TICK_HZ.recip()).abs() < 1e-9);
 
         session.player.velocity.x = 2500.0;
         for _ in 0..3 {
             session.tick(&course, MoveInput::default());
         }
         assert_eq!(session.phase, RunPhase::Finished);
-        assert!(session.elapsed > 4.0 / TICK_HZ);
+        assert!(session.elapsed > 4.0 / crate::movement::TICK_HZ);
         assert!(session.take_finished_replay(&course).unwrap().commands[1].restart_stage);
     }
 

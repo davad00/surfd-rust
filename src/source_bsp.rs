@@ -1145,9 +1145,9 @@ mod tests {
     #[test]
     fn source_settings_require_the_pinned_timer_and_supported_rules() {
         use crate::{
-            catalog::SOURCE_RULES_MOVEMENT_SETTINGS,
+            catalog::{SOURCE_RULES_MOVEMENT_SETTINGS, SOURCE_RULES_TICK_INTERVAL},
             movement::MoveInput,
-            rules::MovementRules,
+            rules::{MovementRules, TickInterval},
             session::{RunPhase, Session},
         };
         use sha2::{Digest, Sha256};
@@ -1198,10 +1198,24 @@ mod tests {
             fs::write(&timer_path, &timer).unwrap();
             format!("{:x}", Sha256::digest(&timer))
         };
-        entry.source_bsp.as_mut().unwrap().timer_sha256 = install_timer(&doc);
+        let legacy_timer = install_timer(&doc);
+        entry.source_bsp.as_mut().unwrap().timer_sha256 = legacy_timer.clone();
         let legacy = load_ranked_collision(&path, &entry).unwrap();
         let legacy_board = legacy.board_revision(None).unwrap();
         assert_eq!(MovementRules::for_course(&legacy), MovementRules::default());
+        doc["source_movement"] = serde_json::json!({"tick_interval_ms":10});
+        entry.source_bsp.as_mut().unwrap().timer_sha256 = install_timer(&doc);
+        entry.min_source_rules = SOURCE_RULES_MOVEMENT_SETTINGS;
+        assert!(load_ranked_collision(&path, &entry).is_err());
+        entry.min_source_rules = SOURCE_RULES_TICK_INTERVAL;
+        let source_100hz = load_ranked_collision(&path, &entry).unwrap();
+        assert_ne!(source_100hz.board_revision(None).unwrap(), legacy_board);
+        assert_eq!(
+            Session::new(&source_100hz).tick_interval(),
+            TickInterval::Source10Ms
+        );
+        entry.min_source_rules = 0;
+        entry.source_bsp.as_mut().unwrap().timer_sha256 = legacy_timer;
         doc["source_movement"] = serde_json::json!({"gravity":400,"air_acceleration":2});
         let changed_pin = install_timer(&doc);
         assert!(load_ranked_collision(&path, &entry).is_err());

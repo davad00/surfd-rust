@@ -72,6 +72,13 @@ struct Sidecar<'a> {
     source_landmark_teleports: bool,
     #[serde(skip_serializing_if = "is_false")]
     source_player_filters: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_movement: Option<SourceMovement>,
+}
+
+#[derive(Serialize)]
+struct SourceMovement {
+    tick_interval_ms: u8,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -197,6 +204,9 @@ pub(crate) fn normalize(
         source_timed_triggers: shavit.timed_triggers,
         source_landmark_teleports: shavit.landmark_teleports,
         source_player_filters: shavit.player_filters,
+        source_movement: shavit
+            .tick_interval_ms
+            .map(|tick_interval_ms| SourceMovement { tick_interval_ms }),
     };
     let mut bytes = Vec::new();
     output
@@ -468,6 +478,13 @@ mod tests {
         assert!(String::from_utf8(extended).unwrap().ends_with(
             "\n  \"entity_output_fixes\": [],\n  \"source_gravity_outputs\": true,\n  \"source_missing_filters\": [\n    \"fix\"\n  ],\n  \"source_timed_triggers\": true,\n  \"source_landmark_teleports\": true,\n  \"source_player_filters\": true\n}\n"
         ));
+        shavit.tick_interval_ms = Some(10);
+        let timed = normalize(raw, &"a".repeat(64), MapMode::Surf, &shavit).unwrap();
+        assert!(
+            String::from_utf8(timed)
+                .unwrap()
+                .ends_with("\n  \"source_movement\": {\n    \"tick_interval_ms\": 10\n  }\n}\n")
+        );
         let json: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(json["tracks"][0]["checkpoints_required"], true);
         assert_eq!(json["tracks"][0]["bhop_enabled"], false);
