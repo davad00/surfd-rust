@@ -284,14 +284,23 @@ fn parse(
 ) -> Result<Course, String> {
     let file = BspFile::new(bytes)?;
     let geometry = Geometry::read(&file)?;
+    let render = load_visuals
+        .then(|| RenderGeometry::read(&file))
+        .transpose()?;
     let pak = load_visuals
         .then(|| file.lump(PAKFILE).unwrap_or_default())
         .unwrap_or_default();
-    let mut materials = Materials::new(&pak, map_path.filter(|_| load_visuals), use_bc);
-    let lighting = load_visuals
-        .then(|| file.lump(geometry.lighting).unwrap_or_default())
+    let lighting = render
+        .as_ref()
+        .map(|render| file.lump(render.lighting).unwrap_or_default())
         .unwrap_or_default();
-    let mut lightmaps = Lightmaps::new(&lighting);
+    let mut visuals = render.map(|render| {
+        (
+            render,
+            Materials::new(&pak, map_path, use_bc),
+            Lightmaps::new(&lighting),
+        )
+    });
     let entity_lump = file.lump(ENTITIES)?;
     let entity_text = String::from_utf8_lossy(&entity_lump);
     let entities = read_entities(&entity_text)?;
@@ -318,11 +327,16 @@ fn parse(
         .first()
         .ok_or("The BSP has no world model")?;
     let mut brushes = geometry.model_brushes(world, Placement::IDENTITY, true)?;
-    let mut surfaces = if load_visuals {
-        geometry.model_surfaces(world, Placement::IDENTITY, &mut materials, &mut lightmaps)?
-    } else {
-        Vec::new()
-    };
+    let mut surfaces = Vec::new();
+    if let Some((render, materials, lightmaps)) = &mut visuals {
+        surfaces = render.model_surfaces(
+            &geometry.planes,
+            world,
+            Placement::IDENTITY,
+            materials,
+            lightmaps,
+        )?;
+    }
     let mut zones = Vec::new();
     let mut conveyors = Vec::new();
     for (index, entity) in entities.iter().enumerate() {
@@ -349,12 +363,13 @@ fn parse(
             entity,
             timer.as_ref().is_some_and(timer::Sidecar::is_bhop),
         ) {
-            if load_visuals {
-                surfaces.extend(geometry.model_surfaces(
+            if let Some((render, materials, lightmaps)) = &mut visuals {
+                surfaces.extend(render.model_surfaces(
+                    &geometry.planes,
                     model,
                     placement,
-                    &mut materials,
-                    &mut lightmaps,
+                    materials,
+                    lightmaps,
                 )?);
             }
             if surface.solid {
@@ -373,25 +388,26 @@ fn parse(
         .map(|brush| brush.min.y)
         .fold(spawn.y, f32::min)
         - 2048.0;
-    let sky_name = entities
-        .iter()
-        .find(|entity| entity.get("classname") == Some("worldspawn"))
-        .and_then(|entity| entity.get("skyname"));
-    let sky = load_visuals
-        .then_some(sky_name)
-        .flatten()
-        .and_then(|name| materials.resolve_sky(name));
-    let mut textures = materials.into_textures();
-    let sky = sky.or_else(|| {
-        (load_visuals
-            && (sky_name.is_some()
-                || geometry
+    let (textures, sky) = if let Some((render, mut materials, lightmaps)) = visuals {
+        let sky_name = entities
+            .iter()
+            .find(|entity| entity.get("classname") == Some("worldspawn"))
+            .and_then(|entity| entity.get("skyname"));
+        let sky = sky_name.and_then(|name| materials.resolve_sky(name));
+        let mut textures = materials.into_textures();
+        let sky = sky.or_else(|| {
+            (sky_name.is_some()
+                || render
                     .textures
                     .iter()
-                    .any(|info| info.flags & SKY_SURFACE != 0)))
-        .then(|| map_materials::append_sky(&mut textures))
-    });
-    lightmaps.append(&mut textures, &mut surfaces);
+                    .any(|info| info.flags & SKY_SURFACE != 0))
+            .then(|| map_materials::append_sky(&mut textures))
+        });
+        lightmaps.append(&mut textures, &mut surfaces);
+        (textures, sky)
+    } else {
+        (Vec::new(), None)
+    };
     let mut course = Course {
         name: name.to_owned(),
         spawn,
@@ -563,13 +579,6 @@ struct Geometry {
     models: Vec<Model>,
     brushes: Vec<RawBrush>,
     sides: Vec<BrushSide>,
-    vertices: Vec<Vec3>,
-    edges: Vec<[usize; 2]>,
-    face_edges: Vec<i32>,
-    faces: Vec<Face>,
-    textures: Vec<TextureInfo>,
-    materials: Vec<TextureData>,
-    lighting: usize,
 }
 
 impl Geometry {
@@ -583,6 +592,63 @@ impl Geometry {
             })?,
             version => return Err(format!("Unsupported Source leaf version {version}")),
         };
+        let children = |row: &[u8]| [i32_at(row, 4), i32_at(row, 8)];
+        let nodes = match file.lump_version(NODES) {
+            0 => file.records::<32, _>(NODES, children)?,
+            1 => file.records::<48, _>(NODES, children)?,
+            version => return Err(format!("Unsupported Source node version {version}")),
+        };
+        let leaf_brushes = match file.lump_version(LEAF_BRUSHES) {
+            0 => file.records::<2, _>(LEAF_BRUSHES, |row| u16_at(row, 0))?,
+            1 => file.records::<4, _>(LEAF_BRUSHES, |row| u32_at(row, 0) as usize)?,
+            version => return Err(format!("Unsupported Source leaf brush version {version}")),
+        };
+        let sides = match file.lump_version(BRUSH_SIDES) {
+            0 => file.records::<8, _>(BRUSH_SIDES, |row| BrushSide {
+                plane: u16_at(row, 0),
+                bevel: i16_at(row, 6) != 0,
+            })?,
+            1 => file.records::<16, _>(BRUSH_SIDES, |row| BrushSide {
+                plane: u32_at(row, 0) as usize,
+                bevel: row[12] != 0,
+            })?,
+            version => return Err(format!("Unsupported Source brush side version {version}")),
+        };
+        Ok(Self {
+            planes: file.records::<20, _>(PLANES, |row| Plane {
+                normal: source_axes(vector_at(row, 0)),
+                distance: f32_at(row, 12),
+            })?,
+            nodes,
+            leaves,
+            leaf_brushes,
+            models: file.records::<48, _>(MODELS, |row| Model {
+                root: i32_at(row, 36),
+                first_face: u32_at(row, 40) as usize,
+                face_count: u32_at(row, 44) as usize,
+            })?,
+            brushes: file.records::<12, _>(BRUSHES, |row| RawBrush {
+                first_side: u32_at(row, 0) as usize,
+                side_count: u32_at(row, 4) as usize,
+                contents: i32_at(row, 8),
+            })?,
+            sides,
+        })
+    }
+}
+
+struct RenderGeometry {
+    vertices: Vec<Vec3>,
+    edges: Vec<[usize; 2]>,
+    face_edges: Vec<i32>,
+    faces: Vec<Face>,
+    textures: Vec<TextureInfo>,
+    materials: Vec<TextureData>,
+    lighting: usize,
+}
+
+impl RenderGeometry {
+    fn read(file: &BspFile<'_>) -> Result<Self, String> {
         let has_lump = |index| u32_at(file.entry(index), 4) != 0;
         let (faces_lump, lighting) = if !has_lump(FACES)
             || (!has_lump(LIGHTING) && has_lump(FACES_HDR) && has_lump(LIGHTING_HDR))
@@ -595,34 +661,12 @@ impl Geometry {
         let material_offsets = file
             .records::<4, _>(TEXDATA_STRING_TABLE, |row| u32_at(row, 0) as usize)
             .unwrap_or_default();
-        let children = |row: &[u8]| [i32_at(row, 4), i32_at(row, 8)];
-        let nodes = match file.lump_version(NODES) {
-            0 => file.records::<32, _>(NODES, children)?,
-            1 => file.records::<48, _>(NODES, children)?,
-            version => return Err(format!("Unsupported Source node version {version}")),
-        };
-        let leaf_brushes = match file.lump_version(LEAF_BRUSHES) {
-            0 => file.records::<2, _>(LEAF_BRUSHES, |row| u16_at(row, 0))?,
-            1 => file.records::<4, _>(LEAF_BRUSHES, |row| u32_at(row, 0) as usize)?,
-            version => return Err(format!("Unsupported Source leaf brush version {version}")),
-        };
         let edges = match file.lump_version(EDGES) {
             0 => file.records::<4, _>(EDGES, |row| [u16_at(row, 0), u16_at(row, 2)])?,
             1 => file.records::<8, _>(EDGES, |row| {
                 [u32_at(row, 0) as usize, u32_at(row, 4) as usize]
             })?,
             version => return Err(format!("Unsupported Source edge version {version}")),
-        };
-        let sides = match file.lump_version(BRUSH_SIDES) {
-            0 => file.records::<8, _>(BRUSH_SIDES, |row| BrushSide {
-                plane: u16_at(row, 0),
-                bevel: i16_at(row, 6) != 0,
-            })?,
-            1 => file.records::<16, _>(BRUSH_SIDES, |row| BrushSide {
-                plane: u32_at(row, 0) as usize,
-                bevel: row[12] != 0,
-            })?,
-            version => return Err(format!("Unsupported Source brush side version {version}")),
         };
         let lightmap = |row: &[u8], offset| FaceLightmap {
             offset: i32_at(row, offset),
@@ -651,24 +695,6 @@ impl Geometry {
             version => return Err(format!("Unsupported Source face version {version}")),
         };
         Ok(Self {
-            planes: file.records::<20, _>(PLANES, |row| Plane {
-                normal: source_axes(vector_at(row, 0)),
-                distance: f32_at(row, 12),
-            })?,
-            nodes,
-            leaves,
-            leaf_brushes,
-            models: file.records::<48, _>(MODELS, |row| Model {
-                root: i32_at(row, 36),
-                first_face: u32_at(row, 40) as usize,
-                face_count: u32_at(row, 44) as usize,
-            })?,
-            brushes: file.records::<12, _>(BRUSHES, |row| RawBrush {
-                first_side: u32_at(row, 0) as usize,
-                side_count: u32_at(row, 4) as usize,
-                contents: i32_at(row, 8),
-            })?,
-            sides,
             vertices: file.records::<12, _>(VERTICES, |row| source_axes(vector_at(row, 0)))?,
             edges,
             face_edges: file.records::<4, _>(SURFEDGES, |row| i32_at(row, 0))?,
@@ -695,7 +721,9 @@ impl Geometry {
             lighting,
         })
     }
+}
 
+impl Geometry {
     fn model_brushes(
         &self,
         model: &Model,
@@ -736,9 +764,12 @@ impl Geometry {
         }
         Ok(brushes)
     }
+}
 
+impl RenderGeometry {
     fn model_surfaces(
         &self,
+        planes: &[Plane],
         model: &Model,
         placement: Placement,
         materials: &mut Materials<'_>,
@@ -775,7 +806,7 @@ impl Geometry {
                 vertices.push(*vertex);
             }
 
-            let normal = lookup(&self.planes, face.plane, "face plane")?.normal;
+            let normal = lookup(planes, face.plane, "face plane")?.normal;
             let normal = if face.reversed { -normal } else { normal };
             let origin = vertices[0];
             let area: Vec3 = vertices[1..]
@@ -1438,10 +1469,51 @@ mod tests {
         let mut bytes = fixture();
         let entry = 8 + PLANES * 16;
         put(&mut bytes, entry, u32::MAX.to_le_bytes());
-        let error = parse(&bytes, "truncated", None, None, true, false, 0)
-            .err()
-            .unwrap();
-        assert!(error.contains("invalid range"));
+        for load_visuals in [false, true] {
+            let error = parse(&bytes, "truncated", None, None, load_visuals, false, 0)
+                .err()
+                .unwrap();
+            assert!(error.contains("invalid range"));
+        }
+    }
+
+    #[test]
+    fn collision_only_skips_invalid_render_lumps() {
+        let clean = parse(&fixture(), "fixture", None, None, false, false, 0).unwrap();
+        let revision = clean.replay_revision(None).unwrap();
+
+        for (lump, compressed) in [
+            (VERTICES, false),
+            (VERTICES, true),
+            (EDGES, false),
+            (SURFEDGES, false),
+            (FACES, false),
+            (TEXINFO, false),
+            (TEXDATA, false),
+        ] {
+            let mut bytes = fixture();
+            add_lump(&mut bytes, lump, 0, &[0]);
+            if compressed {
+                put(&mut bytes, 8 + lump * 16 + 12, 12_u32.to_le_bytes());
+            }
+
+            let collision = parse(&bytes, "fixture", None, None, false, false, 0).unwrap();
+            assert_eq!(
+                collision.replay_revision(None).as_deref(),
+                Some(revision.as_str())
+            );
+            assert!(collision.surfaces.is_empty());
+            assert!(collision.textures.is_empty());
+            assert!(collision.sky.is_none());
+
+            let error = parse(&bytes, "fixture", None, None, true, false, 0)
+                .err()
+                .expect("render loader must validate its data");
+            assert!(error.contains(&format!("BSP lump {lump}")), "{error}");
+            if compressed {
+                assert!(error.contains("invalid LZMA header"));
+            }
+        }
     }
 
     #[test]
