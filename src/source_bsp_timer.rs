@@ -1055,6 +1055,13 @@ fn add_source_teleports(
         if !(timed && filter_name.is_some() || landmarks && landmark_name.is_some()) {
             continue;
         }
+        if extended_names
+            && entity.get("model").is_none()
+            && static_unnamed_client(entity)
+            && entity.outputs.is_empty()
+        {
+            continue;
+        }
         if !static_client_trigger(entity)
             || entity
                 .get("startdisabled")
