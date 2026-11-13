@@ -274,6 +274,7 @@ struct Buffers {
     colors: Vec<[f32; 4]>,
     uv: Vec<[f32; 2]>,
     light_uv: Vec<[f32; 2]>,
+    indices: Vec<u32>,
 }
 
 #[derive(Default)]
@@ -299,7 +300,8 @@ impl IndexUpload {
 }
 
 impl Buffers {
-    fn into_mesh(self) -> Mesh {
+    fn into_mesh(self, uploads: &mut IndexUpload) -> Mesh {
+        let indices = uploads.indices(self.indices, self.positions.len());
         Mesh::new(
             PrimitiveTopology::TriangleList,
             RenderAssetUsages::RENDER_WORLD,
@@ -309,6 +311,7 @@ impl Buffers {
         .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.colors)
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, self.uv)
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_1, self.light_uv)
+        .with_inserted_indices(indices)
     }
 }
 
@@ -1066,7 +1069,7 @@ pub fn update_world(
         lightmap_exposure: inverse_exposure,
     };
     for ((base, light), buffers) in polygon_batches(course) {
-        let mesh = meshes.add(buffers.into_mesh());
+        let mesh = meshes.add(buffers.into_mesh(&mut index_upload));
         let material = handles.material(base, light.is_some());
         let lightmap = handles.lightmap(light);
         spawn_mesh(&mut commands, mesh, material, lightmap, Transform::IDENTITY);
@@ -1278,12 +1281,14 @@ fn polygon_batches(course: &Course) -> BTreeMap<MaterialKey, Buffers> {
             .or_default();
         let [red, green, blue] = surface.color;
         let color = Color::srgb(red, green, blue).to_linear();
+        let mut previous = None;
         for index in 1..surface.vertices.len().saturating_sub(1) {
             let first = surface.vertices[0];
             let normal = (surface.vertices[index] - first)
                 .cross(surface.vertices[index + 1] - first)
                 .normalize_or_zero();
             if normal == Vec3::ZERO {
+                previous = None;
                 continue;
             }
             let shade = 0.58 + 0.42 * normal.dot(Vec3::new(0.23, 0.92, 0.31)).max(0.0);
@@ -1298,7 +1303,8 @@ fn polygon_batches(course: &Course) -> BTreeMap<MaterialKey, Buffers> {
                     1.0,
                 ]
             };
-            for i in [0, index, index + 1] {
+            let mut vertex = |i: usize| {
+                let offset = buffers.positions.len() as u32;
                 buffers.positions.push(surface.vertices[i].to_array());
                 buffers.normals.push(normal.to_array());
                 buffers.colors.push(tint);
@@ -1308,7 +1314,17 @@ fn polygon_batches(course: &Course) -> BTreeMap<MaterialKey, Buffers> {
                 buffers
                     .light_uv
                     .push(light.map_or([0.; 2], |light| light.uvs[i]));
-            }
+                offset
+            };
+            // Share the fan origin and joining edge when all vertex
+            // attributes match. Keep the original per-triangle normals.
+            let [origin, left] = match previous {
+                Some((prior, origin, right)) if prior == normal => [origin, right],
+                _ => [vertex(0), vertex(index)],
+            };
+            let right = vertex(index + 1);
+            buffers.indices.extend([origin, left, right]);
+            previous = Some((normal, origin, right));
         }
     }
     batches
@@ -1739,6 +1755,23 @@ fn cube_map(course: &Course, faces: [usize; 6]) -> Option<Image> {
 mod tests {
     use super::*;
     use bevy::ecs::world::CommandQueue;
+    use bevy_surf::course::Surface;
+
+    #[test]
+    fn polygon_fans_share_only_matching_triangle_vertices() {
+        let mut course = Course::practice();
+        course.surfaces = vec![Surface {
+            vertices: vec![Vec3::ZERO, Vec3::X, Vec3::X + Vec3::Y, Vec3::Y, Vec3::Z],
+            color: [0.5; 3],
+            texture: None,
+            lightmap: None,
+        }];
+        let batch = polygon_batches(&course).remove(&(None, None)).unwrap();
+        assert_eq!(batch.positions.len(), 7);
+        assert_eq!(batch.indices, [0, 1, 2, 0, 2, 3, 4, 5, 6]);
+        assert_eq!(batch.normals[..4], [[0.0, 0.0, 1.0]; 4]);
+        assert_eq!(batch.normals[4..], [[1.0, 0.0, 0.0]; 3]);
+    }
 
     #[test]
     fn grouped_pvs_matches_each_draw_through_mask_and_fallback_changes() {

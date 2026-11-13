@@ -3142,20 +3142,16 @@
       "bonuses": 0,
       "sourceBsp": {
         "bspSha256": "d6cb5c002ecf48e7f8e7b42b630870613c18256596f55159cf9f8a4f66fe0f43",
-        "timerSha256": "6e01a19b124010a962a8f971603c931321922efc6111cda7b63d12ecc35b72c0"
+        "timerSha256": "08d45f318d17bacedf6920162b4dcf4db489cc3e5ce5fbcb16f1ac2fc3c8f86d"
       },
       "download": {
         "bspUrl": "https://main.fastdl.me/maps/4168913b9ad727bd7fd2181270d599e7423e9025.bsp.bz2",
-        "timerUrl": "https://raw.githubusercontent.com/srcwr/zones-cstrike/8bb4dfcfab35a14edd33aa53b047273b3fd27a00/z/bhop_jaunt_3.json",
+        "timerUrl": "https://raw.githubusercontent.com/davad00/surfd-rust/9631ed7adb230631f52bcbb5e9a1620be670bd2e/assets/community-timers/bhop_jaunt_3.surf.json",
         "compression": "bzip2",
         "stages": 0,
-        "checkpoints": 0,
-        "shavit": {
-          "sha256": "929e941af888c55b802ebc86e92fed5423733e643226b53756d0ecc2727ed105",
-          "tier": 1,
-          "spawnTargets": {}
-        }
-      }
+        "checkpoints": 0
+      },
+      "minSourceRules": 7
     },
     {
       "id": "bhop_jaunt_4",
@@ -3168,20 +3164,16 @@
       "bonuses": 0,
       "sourceBsp": {
         "bspSha256": "338383ed1c4df17d566f7e25c26f8749687eeaf93ad442460bb4ca22ec03875c",
-        "timerSha256": "4802825e40a3c3fc2afc4f388037436177023686024fb73e7ff79b585680df4c"
+        "timerSha256": "35e99d83d1eb2e365d8a2439d1e9f99f5cdc366c85796eee5b5906974df7c115"
       },
       "download": {
         "bspUrl": "https://main.fastdl.me/maps/bb9b42069b00eccf62b6143f64fdf76ebc5624e1.bsp.bz2",
-        "timerUrl": "https://raw.githubusercontent.com/srcwr/zones-cstrike/8bb4dfcfab35a14edd33aa53b047273b3fd27a00/z/bhop_jaunt_4.json",
+        "timerUrl": "https://raw.githubusercontent.com/davad00/surfd-rust/9631ed7adb230631f52bcbb5e9a1620be670bd2e/assets/community-timers/bhop_jaunt_4.surf.json",
         "compression": "bzip2",
         "stages": 0,
-        "checkpoints": 0,
-        "shavit": {
-          "sha256": "cc0b58940f0e74c3a0b4c5555f3f3f36d2c69548352860e393143acf5a9f1410",
-          "tier": 1,
-          "spawnTargets": {}
-        }
-      }
+        "checkpoints": 0
+      },
+      "minSourceRules": 7
     },
     {
       "id": "bhop_jaunt_6",
@@ -3194,20 +3186,16 @@
       "bonuses": 0,
       "sourceBsp": {
         "bspSha256": "9e65fe30736fb2326623882ca0c8f199a7d9a46e848de1ce12a58c5731bdcdb2",
-        "timerSha256": "12b0c929f8ad017f72b601697e43d188ee3b85c5d637eeb2593e691ee526abf9"
+        "timerSha256": "93a92d45b6c8fafc4259bacf4f0a016f86e5c53de508b65d60d2bb40305a18b8"
       },
       "download": {
         "bspUrl": "https://main.fastdl.me/maps/6e9cc1ccf1a25ff98ff82a419f898b9c9952419f.bsp.bz2",
-        "timerUrl": "https://raw.githubusercontent.com/srcwr/zones-cstrike/8bb4dfcfab35a14edd33aa53b047273b3fd27a00/z/bhop_jaunt_6.json",
+        "timerUrl": "https://raw.githubusercontent.com/davad00/surfd-rust/b30046bca9ce099cdc915548049026ca2a795c6d/assets/community-timers/bhop_jaunt_6.surf.json",
         "compression": "bzip2",
         "stages": 0,
-        "checkpoints": 0,
-        "shavit": {
-          "sha256": "5f465dc01870510d7351f2a1a60ffc4aa5f5ff58f3d78474c2b142486e2a3ff3",
-          "tier": 1,
-          "spawnTargets": {}
-        }
-      }
+        "checkpoints": 0
+      },
+      "minSourceRules": 7
     },
     {
       "id": "bhop_jump",
@@ -6508,6 +6496,28 @@
         "checkpoints": 3
       },
       "minSourceRules": 4
+    },
+    {
+      "id": "surf_lavaflow",
+      "slug": "surf_lavaflow",
+      "name": "Lavaflow",
+      "author": "Kiiru",
+      "mode": "surf",
+      "tier": 2,
+      "type": "linear",
+      "bonuses": 0,
+      "sourceBsp": {
+        "bspSha256": "8acb24552de0664245fd9d116271bace7e55cc5764b89bee38b054ee977a4518",
+        "timerSha256": "4f719f66ea950f94fc851ca085fbe6e0abd590745715f66b246f5a7fd3e54fd4"
+      },
+      "download": {
+        "bspUrl": "https://cdn.steamusercontent.com/ugc/510378425103100930/C6597E881F81949916D672D9C27AB223CA0CB39C/",
+        "timerUrl": "https://raw.githubusercontent.com/davad00/surfd-rust/b30046bca9ce099cdc915548049026ca2a795c6d/assets/community-timers/surf_lavaflow.surf.json",
+        "compression": "zip",
+        "stages": 0,
+        "checkpoints": 2
+      },
+      "minSourceRules": 5
     },
     {
       "id": "surf_loentra",

@@ -2,7 +2,7 @@
 
 An independent Bevy 0.20 desktop surf game with Rust room and records servers. The 71-map catalog uses Surfd as a reference for controls, movement and timing. Downline and Surf School are built in for offline practice and local server testing. Catalog assets download at runtime.
 
-The **Practice → Local maps** list also includes community Source maps with pinned files, tiers, and timing zones. These maps use the desktop's 15 ms movement step. The reference Bhop courses use a 10 ms step, so their original times are kept separate. A local `practice-catalog.json` in the map data directory can add pinned Practice courses. The client downloads each course on first use.
+The **Practice maps** list also includes community Source maps with pinned files, tiers, and timing zones. Most use the desktop's 15 ms movement step. Jaunt 3, 4, and 6 use a 10 ms step and a per-map Bhop timer profile. A local `practice-catalog.json` in the map data directory can add pinned Practice courses. The client downloads each course on first use.
 
 The game uses textures packed in the BSP first, then searches installed Source games. To use assets from another local install, set `SURF_SOURCE_ASSETS` to the folder containing `cstrike` and `hl2`, or to a path-separated list of content folders or VPK indexes. Keep numbered VPK files beside their index. The game uses built-in replacement materials for files it cannot resolve.
 

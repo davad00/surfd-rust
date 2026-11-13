@@ -34,6 +34,14 @@ The author-marked timer brushes are read from each pinned map. The two wrldspawn
 | Rubik's Cube | [KSF](https://ksf.surf/maps/surf_rubiks_cube) | Compiled map |
 | Void | [KSF](https://ksf.surf/maps/surf_void) | Compiled map and authored jump-suppression triggers |
 
+## Jaunt Bhop Practice routes
+
+Jaunt 3, 4, and 6 by Curly use their original Tier 1 main routes with a 10 ms movement step, air acceleration of 1,000, gravity of 800, a 3,500-unit per-axis velocity cap, and a 290-unit start-speed limit. They use autohop and the floor-relative landing correction. The published route boxes match the pinned BSPs. Eleven published runs reproduced their finish command and displayed time on these settings. [Jaunt 3 records](https://bunnyhop.lol/api/leaderboards/bhop_jaunt_3/autohop?limit=50) · [Jaunt 4 records](https://bunnyhop.lol/api/leaderboards/bhop_jaunt_4/autohop?limit=50) · [Jaunt 6 records](https://bunnyhop.lol/api/leaderboards/bhop_jaunt_6/autohop?limit=50)
+
+## Counter-Strike: Global Offensive Lavaflow
+
+Lavaflow by Kiiru is a Tier 2 linear course with two checkpoints. The desktop downloads the exact map from the original Workshop listing. Its file size and checksum match the published timer archive. Practice uses air acceleration of 150, ground acceleration of 10, friction of 5.2, a 3,500-unit per-axis cap, and a 260-unit start-speed limit. The historical server tickrate and timer's exact prespeed behavior still need verification. [Workshop release](https://steamcommunity.com/sharedfiles/filedetails/?id=465027021) · [Timer archive](https://github.com/Sayt123/SurfZones/tree/78b5d079f0534eeb464ad1cdf8137a65713522d9)
+
 ## Counter-Strike: Source Surf course credits
 
 The four wrldspawn timers use the Unlicense course data. The other timers reference each map author's compiled timer brushes directly, with published tiers and named authors from KSF. KSF lists 0 for some speed caps, which indicates an unspecified per-map override. The documented native 5,000-unit per-axis cap applies on those maps. This is the desktop ranked ruleset.

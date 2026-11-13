@@ -96,8 +96,12 @@ impl MapSource {
             }
             Self::PracticeBsp(entry) => {
                 status(format!("Loading {} and its verified timer…", entry.name));
-                let mut course =
-                    catalog::files::load_source(&directory.join("practice-cache"), &entry, true)?;
+                let mut course = catalog::files::load_source_with_bc(
+                    &directory.join("practice-cache"),
+                    &entry,
+                    true,
+                    source_bc,
+                )?;
                 course.catalog_revision = None;
                 Ok(course)
             }
@@ -430,10 +434,7 @@ impl MapLibrary {
                 .map(|map| MapEntry {
                     id: format!("practice:{}", map.id),
                     name: map.name.clone(),
-                    detail: format!(
-                        "{} · {} · Surfd movement (66.67 tick)",
-                        map.author, map.layout
-                    ),
+                    detail: format!("{} · {} · Practice", map.author, map.layout),
                     mode: map.mode,
                     tier: map.tier,
                     source: MapSource::PracticeBsp(Arc::new(map)),

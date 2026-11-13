@@ -174,6 +174,7 @@ pub enum MapCompression {
     None,
     Gzip,
     Bzip2,
+    Zip,
 }
 
 pub const MAX_CATALOG_BYTES: usize = 2 * 1024 * 1024;
@@ -646,7 +647,44 @@ pub mod files {
                 expected,
                 limit,
             ),
+            MapCompression::Zip => write_zipped_bsp(destination, body, expected, limit),
         }
+    }
+
+    fn write_zipped_bsp(
+        destination: &Path,
+        body: impl Read,
+        expected: &str,
+        limit: u64,
+    ) -> Result<(), String> {
+        let name = destination
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("Missing BSP filename")?;
+        let mut bytes = Vec::new();
+        body.take(MAX_ASSET_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("{name}: {error}"))?;
+        if bytes.len() as u64 > MAX_ASSET_BYTES {
+            return Err(format!("{name}: map archive is too large"));
+        }
+        let archive =
+            vformats::bsp::ZipReader::parse(&bytes).map_err(|error| format!("{name}: {error}"))?;
+        let mut entries = archive.entries().iter().filter(|entry| entry.path == name);
+        let entry = entries
+            .next()
+            .ok_or_else(|| format!("{name}: BSP is missing from the archive"))?;
+        if entries.next().is_some() {
+            return Err(format!("{name}: archive contains duplicate BSP entries"));
+        }
+        let limits = vformats::Limits {
+            max_entry_bytes: limit,
+            ..Default::default()
+        };
+        let bsp = archive
+            .entry_bytes(entry, &limits)
+            .map_err(|error| format!("{name}: {error}"))?;
+        write_source_file(destination, bsp.as_ref(), expected, limit)
     }
 
     fn write_source_file(
