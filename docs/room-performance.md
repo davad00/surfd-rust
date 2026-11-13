@@ -161,3 +161,5 @@ Collision brushes, triggers, and 900 movement ticks matched across eight tested 
 Two held-frame tests per build at 1280×800 on Simpsons Source measured 79.8–93.2 FPS in v0.1.13 and 85.9–96.3 FPS in v0.1.14. The captured map crop matched pixel for pixel. Whole-process CPU time overlapped between builds, and these runs establish no whole-game CPU reduction.
 
 GPU culling and per-frame upload limits were tested separately on Lt. Omnific. GPU culling slowed both fixed-camera trials. Upload limits yielded inconsistent frame times across runs, so neither setting is enabled by default.
+
+The v0.1.17 desktop parses the visual manifest once per load and starts download workers only for uncached packs. Source downloads hash the BSP as it is written, avoiding a second file read before caching it. Three held-frame Lt. Omnific trials per build produced identical screenshots. Cached load medians were 4,712 ms before and 4,639 ms after, with overlapping ranges of 2,966–8,374 ms and 2,684–8,986 ms. Concurrent builds created enough variation that these trials cannot establish a load-time or frame-rate gain.
