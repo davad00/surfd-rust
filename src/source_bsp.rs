@@ -1214,6 +1214,16 @@ mod tests {
             Session::new(&source_100hz).tick_interval(),
             TickInterval::Source10Ms
         );
+        doc["source_movement"]["tick_interval_ms"] = 15.into();
+        entry.source_bsp.as_mut().unwrap().timer_sha256 = install_timer(&doc);
+        entry.min_source_rules = SOURCE_RULES_MOVEMENT_SETTINGS;
+        assert!(load_ranked_collision(&path, &entry).is_err());
+        entry.min_source_rules = SOURCE_RULES_TICK_INTERVAL;
+        let explicit_legacy = load_ranked_collision(&path, &entry).unwrap();
+        assert_eq!(
+            Session::new(&explicit_legacy).tick_interval(),
+            TickInterval::Legacy15Ms
+        );
         entry.min_source_rules = 0;
         entry.source_bsp.as_mut().unwrap().timer_sha256 = legacy_timer;
         doc["source_movement"] = serde_json::json!({"gravity":400,"air_acceleration":2});

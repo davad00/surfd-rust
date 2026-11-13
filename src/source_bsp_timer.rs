@@ -324,7 +324,7 @@ impl Sidecar {
             || ((self.source_timed_triggers || self.source_landmark_teleports)
                 && entry.min_source_rules < SOURCE_RULES_TIMED_TRIGGERS)
             || (self.source_player_filters && entry.min_source_rules < SOURCE_RULES_PLAYER_FILTERS)
-            || (self.source_movement.tick_interval() != TickInterval::Legacy15Ms
+            || (self.source_movement.tick_interval_ms.is_some()
                 && entry.min_source_rules < SOURCE_RULES_TICK_INTERVAL)
             || ((self.source_movement.changes_defaults()
                 || self.source_prestart_target.is_some()

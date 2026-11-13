@@ -338,7 +338,7 @@ pub fn parse_source_catalog(data: &[u8]) -> Result<CommunityCatalog, String> {
                         && entry.min_source_rules < SOURCE_RULES_PLAYER_FILTERS)
                     || shavit.tick_interval_ms.is_some_and(|ms| {
                         !matches!(ms, 10 | 15)
-                            || (ms == 10 && entry.min_source_rules < SOURCE_RULES_TICK_INTERVAL)
+                            || entry.min_source_rules < SOURCE_RULES_TICK_INTERVAL
                     })
             })
         {
