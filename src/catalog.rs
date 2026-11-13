@@ -711,17 +711,20 @@ pub mod files {
         let sequence = DOWNLOAD_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let part = destination.with_extension(format!("{}.{}.part", std::process::id(), sequence));
         let result = (|| -> io::Result<()> {
-            let mut file = File::create(&part)?;
-            let size = io::copy(&mut reader.take(limit + 1), &mut file)?;
+            let mut output = CheckedDownload {
+                file: File::create(&part)?,
+                digest: Sha256::new(),
+            };
+            let size = io::copy(&mut reader.take(limit + 1), &mut output)?;
             if size == 0 || size > limit {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "unexpected map file size",
                 ));
             }
-            file.flush()?;
-            drop(file);
-            verify_sha256(&part, expected, limit)?;
+            verify_download_digest(output.digest, expected)?;
+            output.file.flush()?;
+            drop(output.file);
             match fs::rename(&part, destination) {
                 Ok(()) => Ok(()),
                 Err(error) => verify_sha256(destination, expected, limit).map_err(|_| error),
@@ -733,13 +736,40 @@ pub mod files {
         result.map_err(|error| format!("{}: {error}", name.to_string_lossy()))
     }
 
+    struct CheckedDownload {
+        file: File,
+        digest: Sha256,
+    }
+
+    impl Write for CheckedDownload {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let count = self.file.write(bytes)?;
+            self.digest.update(&bytes[..count]);
+            Ok(count)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.file.flush()
+        }
+    }
+
     fn verify_sha256(path: &Path, expected: &str, limit: u64) -> io::Result<()> {
         let mut digest = Sha256::new();
         let bytes = io::copy(
             &mut BufReader::new(File::open(path)?).take(limit + 1),
             &mut digest,
         )?;
-        if bytes == 0 || bytes > limit || format!("{:x}", digest.finalize()) != expected {
+        if bytes == 0 || bytes > limit {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unexpected map file size",
+            ));
+        }
+        verify_download_digest(digest, expected)
+    }
+
+    fn verify_download_digest(digest: Sha256, expected: &str) -> io::Result<()> {
+        if format!("{:x}", digest.finalize()) != expected {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "map file checksum mismatch",

@@ -46,7 +46,7 @@ impl Default for VisualLoadOptions {
 /// manifest's `.visual-assets.gz` files must be next to the manifest itself.
 pub fn load(geometry: &Path, visuals: Option<&Path>) -> Result<Course, String> {
     let data = read_json(geometry, MAX_COLLISION_JSON)?;
-    build_course(data, visuals, VisualLoadOptions::default())
+    build_course(data, visuals, VisualLoadOptions::default(), |_| Ok(()))
 }
 
 pub fn load_verified(
@@ -80,14 +80,27 @@ pub fn load_verified_with_visual_options(
     revision: &str,
     options: VisualLoadOptions,
 ) -> Result<Course, String> {
+    load_verified_with_visual_packs(geometry, visuals, revision, options, |_| Ok(()))
+}
+
+/// Prepare the required pack files beside the manifest before reading them.
+/// The same validated manifest determines dependencies and decodes the course.
+pub fn load_verified_with_visual_packs(
+    geometry: &Path,
+    visuals: Option<&Path>,
+    revision: &str,
+    options: VisualLoadOptions,
+    prepare_packs: impl FnOnce(&[&str]) -> Result<(), String>,
+) -> Result<Course, String> {
     let data = read_revision(geometry, MAX_COLLISION_JSON, Some(revision))?;
-    build_course(data, visuals, options)
+    build_course(data, visuals, options, prepare_packs)
 }
 
 fn build_course(
     data: Collision,
     visuals: Option<&Path>,
     options: VisualLoadOptions,
+    prepare_packs: impl FnOnce(&[&str]) -> Result<(), String>,
 ) -> Result<Course, String> {
     let mut course = data.to_course(visuals.is_none())?;
     if let Some(manifest) = visuals {
@@ -97,6 +110,7 @@ fn build_course(
             &data.id,
             data.source.as_ref(),
             options,
+            prepare_packs,
         )?;
     }
     Ok(course)

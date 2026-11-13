@@ -305,6 +305,23 @@ impl RankedSave {
     fn belongs_to(&self, owner: i64, origin: &str) -> bool {
         self.owner == owner && self.origin == origin
     }
+
+    fn ready_to_send(&self, generation: u64, now: Instant) -> bool {
+        self.payload.is_some()
+            && match &self.state {
+                RankedSaveState::Queued => true,
+                RankedSaveState::Failed {
+                    generation: requested,
+                    error,
+                    retry_at,
+                    ..
+                } => {
+                    retry_at.is_some_and(|deadline| now >= deadline)
+                        && (error.status != Some(401) || *requested != generation)
+                }
+                _ => false,
+            }
+    }
 }
 
 enum RankedSaveState {
@@ -313,7 +330,7 @@ enum RankedSaveState {
     Failed {
         generation: u64,
         error: api::RankedSaveFailure,
-        retry_at: Instant,
+        retry_at: Option<Instant>,
         reported: bool,
     },
     Saved {
@@ -324,6 +341,7 @@ enum RankedSaveState {
 }
 
 const ROOM_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
+const RANKED_SAVE_RETRY_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 struct RoomRefreshSchedule {
@@ -1900,15 +1918,8 @@ impl Online {
                 RankedSaveState::Saved { .. } => {
                     self.record_status = "This run has already been verified.".into()
                 }
-                RankedSaveState::Failed {
-                    generation,
-                    error,
-                    retry_at,
-                    ..
-                } => {
-                    if save.payload.is_some()
-                        && Instant::now() >= *retry_at
-                        && (error.status != Some(401) || *generation != self.account_generation)
+                RankedSaveState::Failed { error, .. } => {
+                    if save.ready_to_send(self.account_generation, Instant::now())
                         && !self.ranked_save_in_flight(save.owner)
                     {
                         self.start_ranked_save(index, true);
@@ -2061,7 +2072,10 @@ impl Online {
                 }
             }
             Err(error) => {
-                let retry_at = Instant::now() + error.retry_after.unwrap_or_default();
+                let now = Instant::now();
+                let retry_at = error.retry_after.map_or(Some(now), |delay| {
+                    now.checked_add(delay.max(RANKED_SAVE_RETRY_INTERVAL))
+                });
                 if error.retry_after.is_none() && error.status != Some(401) {
                     save.payload = None;
                     save.attempt = None;
@@ -2159,12 +2173,10 @@ impl Online {
                 Reply::RankedProfile(api::get(&endpoint, "/v1/profile", Some(&token)))
             });
         }
+        let now = Instant::now();
         if !self.ranked_save_in_flight(owner)
             && let Some(index) = self.ranked_saves.iter().position(|save| {
-                save.belongs_to(owner, &self.records_origin) && save.payload.is_some()
-                    && (matches!(save.state, RankedSaveState::Queued)
-                        || matches!(save.state, RankedSaveState::Failed { generation: requested, retry_at, .. }
-                            if requested != generation && Instant::now() >= retry_at))
+                save.belongs_to(owner, &self.records_origin) && save.ready_to_send(generation, now)
             })
         {
             self.start_ranked_save(index, true);
@@ -4931,6 +4943,104 @@ mod tests {
         complete_sign_in(&mut online, Ok(signed_in(23)));
         online.update_ranked_saves(&mut menu);
         assert_eq!(online.record_status, "Verified personal best saved");
+    }
+
+    #[test]
+    fn pending_ranked_save_retries_after_an_outage_without_signing_in_again() {
+        use bevy_surf::record_protocol::{Submission, SubmissionStatus};
+        use std::io::{BufRead, BufReader, Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut online = Online::default();
+        online.endpoint = format!("http://{}", listener.local_addr().unwrap());
+        online.sync_records_origin();
+        complete_sign_in(&mut online, Ok(signed_in(23)));
+        let generation = online.account_generation;
+        let (_, replay) = profile_replay_fixture();
+        let payload = PendingRankedSave::new(23, online.records_origin.clone(), replay).unwrap();
+        let id = payload.save_id.clone();
+        let mut save = RankedSave::queued(payload, Some(7), None);
+        save.state = RankedSaveState::InFlight(generation);
+        online.ranked_saves.push_back(save);
+        let mut menu = MenuState::new(std::path::Path::new("target"));
+
+        for status in [Some(401), Some(503)] {
+            online.complete_ranked_save(
+                &id,
+                generation,
+                Err(api::RankedSaveFailure {
+                    message: "Save temporarily unavailable".into(),
+                    status,
+                    retry_after: (status == Some(503)).then_some(Duration::from_secs(90)),
+                }),
+            );
+            online.update_ranked_saves(&mut menu);
+            let save = online.ranked_saves.front_mut().unwrap();
+            let RankedSaveState::Failed { retry_at, .. } = &mut save.state else {
+                panic!("save retried too early");
+            };
+            *retry_at = Some(Instant::now());
+            online.update_ranked_saves(&mut menu);
+            if status == Some(401) {
+                let save = online.ranked_saves.front_mut().unwrap();
+                assert!(matches!(save.state, RankedSaveState::Failed { .. }));
+                save.state = RankedSaveState::InFlight(generation);
+            }
+        }
+
+        assert!(online.ranked_save_in_flight(23));
+        assert_eq!(online.account_generation, generation);
+
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = BufReader::new(&mut stream);
+            let mut line = String::new();
+            request.read_line(&mut line).unwrap();
+            assert!(line.starts_with("POST /v1/runs/resume/result HTTP/1.1"));
+            let mut content_length = None;
+            loop {
+                line.clear();
+                assert_ne!(request.read_line(&mut line).unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    content_length = Some(value.trim().parse::<usize>().unwrap());
+                }
+            }
+            let mut lookup = vec![0; content_length.unwrap()];
+            request.read_exact(&mut lookup).unwrap();
+            let lookup: bevy_surf::record_protocol::RankedSaveLookup =
+                serde_json::from_slice(&lookup).unwrap();
+            assert_eq!(lookup.save_id, id);
+            let receipt = serde_json::to_vec(&SubmissionStatus::Saved(Submission {
+                time_us: 1_234_000,
+                personal_best: true,
+                run_id: Some("already-saved".into()),
+                stage_records: Vec::new(),
+                progression: None,
+                bhop_progression: None,
+            }))
+            .unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                receipt.len()
+            )
+            .unwrap();
+            stream.write_all(&receipt).unwrap();
+        });
+        let Reply::Submitted(id, generation, result) = receive_background(&mut online).reply else {
+            panic!("expected a ranked save reply");
+        };
+        assert!(result.as_ref().is_ok_and(|receipt| receipt.restored));
+        online.complete_ranked_save(&id, generation, result);
+        online.update_ranked_saves(&mut menu);
+        assert_eq!(online.record_status, "Verified personal best saved");
+        server.join().unwrap();
     }
 
     fn profile_replay_fixture() -> (bevy_surf::course::Course, RunReplay) {

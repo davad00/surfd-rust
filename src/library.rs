@@ -696,15 +696,13 @@ fn load_catalog(
         None
     };
     let prepare = |use_bc| {
-        if let Some(manifest) = &manifest {
-            fetch_visual_packs(&agent, &directory, manifest, use_bc, &status)?;
-        }
         status("Preparing the course and original textures…".into());
-        surfd_map::load_verified_with_visual_options(
+        surfd_map::load_verified_with_visual_packs(
             &geometry_path,
             manifest.as_deref(),
             revision,
             VisualLoadOptions { use_bc, ..options },
+            |packs| fetch_visual_packs(&agent, &directory, packs, &status),
         )
     };
     let mut course = if options.use_bc && manifest.is_some() {
@@ -734,15 +732,21 @@ fn load_catalog(
 fn fetch_visual_packs(
     agent: &ureq::Agent,
     directory: &Path,
-    manifest: &Path,
-    use_bc: bool,
+    assets: &[&str],
     status: &impl Fn(String),
 ) -> Result<(), String> {
-    let assets = surfd_map::visual_dependencies_for_gpu(manifest, use_bc)?;
-    if !assets.is_empty() {
-        status(format!("Loading {} original visual packs…", assets.len()));
+    let missing: Vec<_> = assets
+        .iter()
+        .copied()
+        .filter(|url| {
+            url.strip_prefix("/packed/")
+                .is_none_or(|name| !directory.join(name).is_file())
+        })
+        .collect();
+    if !missing.is_empty() {
+        status(format!("Loading {} original visual packs…", missing.len()));
     }
-    for batch in assets.chunks(4) {
+    for batch in missing.chunks(4) {
         std::thread::scope(|scope| {
             let downloads: Vec<_> = batch
                 .iter()

@@ -51,6 +51,7 @@ pub(super) fn populate(
     map_id: &str,
     source: Option<&Source>,
     options: VisualLoadOptions,
+    prepare_packs: impl FnOnce(&[&str]) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut manifest = Manifest::read(path)?;
     let source_hash = source.and_then(|source| source.sha1.as_deref());
@@ -67,7 +68,10 @@ pub(super) fn populate(
         .take()
         .and_then(|data| VisualVisibility::parse(data, manifest.data.bsp_sha1.as_deref()?));
     let plan = manifest.asset_plan(options.use_bc)?;
-    let assets = manifest.read_packs(path, &plan.urls, options.parallel_packs)?;
+    let packs = manifest.packs_for(&plan.urls);
+    let urls: Vec<_> = packs.iter().map(|pack| pack.url.as_str()).collect();
+    prepare_packs(&urls)?;
+    let assets = Manifest::read_packs(path, &packs, &plan.urls, options.parallel_packs)?;
     let decoded_images = prepare_images(&assets, plan.images)?;
     let mut textures = TextureBuilder {
         assets,
@@ -343,8 +347,8 @@ impl Manifest {
     }
 
     fn read_packs<'a>(
-        &'a self,
         path: &Path,
+        packs: &[&'a Pack],
         needed: &HashSet<&'a str>,
         parallel: bool,
     ) -> Result<HashMap<&'a str, Vec<u8>>, String> {
@@ -353,7 +357,6 @@ impl Manifest {
             .ok_or("Visual manifest has no asset directory")?;
         let mut buffers: HashMap<&str, (usize, Vec<u8>)> = HashMap::new();
         let mut total = 0_usize;
-        let packs = self.packs_for(needed);
         let workers = thread::available_parallelism()
             .map_or(1, |count| count.get().saturating_sub(1).clamp(1, 3));
         // Reserve a logical CPU and bound decompressed batches to 12 MiB. Pack
@@ -401,7 +404,7 @@ impl Manifest {
                 }
             }
         } else {
-            for pack in packs {
+            for &pack in packs {
                 append(pack, pack.read(folder)?)?;
             }
         }

@@ -332,7 +332,12 @@ fn retry_ranked<T>(
 ) -> Result<T, RankedSaveFailure> {
     for retry in 0..3 {
         match send(retry != 0) {
-            Err(error) if retry < 2 && error.retry_after.is_some() => {
+            Err(error)
+                if retry < 2
+                    && error
+                        .retry_after
+                        .is_some_and(|delay| delay <= Duration::from_secs(60)) =>
+            {
                 let backoff = Duration::from_secs(1 << retry);
                 std::thread::sleep(error.retry_after.unwrap().max(backoff));
             }
@@ -364,20 +369,13 @@ fn typed_response<T: DeserializeOwned>(
         // A missing or truncated success response may follow a committed save.
         Some(Duration::ZERO)
     } else {
-        attempt_retry_delay(status, response.headers())
+        response_retry_delay(status, response.headers())
     };
     decode_response(response, 16 * 1024).map_err(|error| RequestFailure {
         message: error.message(),
         status: Some(status.as_u16()),
         retry_after,
     })
-}
-
-fn attempt_retry_delay(
-    status: ureq::http::StatusCode,
-    headers: &ureq::http::HeaderMap,
-) -> Option<Duration> {
-    response_retry_delay(status, headers).filter(|delay| *delay <= Duration::from_secs(60))
 }
 
 fn response_retry_delay(
@@ -551,31 +549,38 @@ mod tests {
     use ureq::http::{HeaderMap, HeaderValue, StatusCode, header::RETRY_AFTER};
 
     #[test]
-    fn attempt_retry_delays_respect_server_backoff_and_permanent_errors() {
+    fn retry_delays_respect_server_backoff_and_permanent_errors() {
         let mut headers = HeaderMap::new();
         assert_eq!(
-            attempt_retry_delay(StatusCode::SERVICE_UNAVAILABLE, &headers),
+            response_retry_delay(StatusCode::SERVICE_UNAVAILABLE, &headers),
             Some(Duration::from_secs(2))
         );
         assert_eq!(
-            attempt_retry_delay(StatusCode::TOO_MANY_REQUESTS, &headers),
+            response_retry_delay(StatusCode::TOO_MANY_REQUESTS, &headers),
             Some(Duration::from_secs(60))
         );
         headers.insert(RETRY_AFTER, HeaderValue::from_static("9"));
         assert_eq!(
-            attempt_retry_delay(StatusCode::TOO_MANY_REQUESTS, &headers),
+            response_retry_delay(StatusCode::TOO_MANY_REQUESTS, &headers),
             Some(Duration::from_secs(9))
         );
         assert_eq!(
-            attempt_retry_delay(StatusCode::UNAUTHORIZED, &headers),
+            response_retry_delay(StatusCode::UNAUTHORIZED, &headers),
             None
         );
-        assert_eq!(attempt_retry_delay(StatusCode::NOT_FOUND, &headers), None);
+        assert_eq!(response_retry_delay(StatusCode::NOT_FOUND, &headers), None);
         headers.insert(RETRY_AFTER, HeaderValue::from_static("61"));
-        assert_eq!(
-            attempt_retry_delay(StatusCode::SERVICE_UNAVAILABLE, &headers),
-            None
-        );
+        let delay = response_retry_delay(StatusCode::SERVICE_UNAVAILABLE, &headers);
+        let failure = retry_ranked::<()>(|retrying| {
+            assert!(!retrying, "long delays are scheduled by the desktop");
+            Err(RankedSaveFailure {
+                message: "Busy".into(),
+                status: Some(503),
+                retry_after: delay,
+            })
+        })
+        .unwrap_err();
+        assert_eq!(failure.retry_after, Some(Duration::from_secs(61)));
     }
 
     #[test]
