@@ -9,6 +9,13 @@
     "ground_acceleration": 10,
     "ground_friction": 5.2
   },
+  "source_push_speed_overrides": [
+    {
+      "hammerid": 2808,
+      "from_speed": 800,
+      "to_speed": 4000
+    }
+  ],
   "tracks": [
     {
       "id": 0,
